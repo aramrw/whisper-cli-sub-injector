@@ -37,7 +37,10 @@
     autoFadeTimeoutMs: 6e3,
     maxLines: 3,
     stackMode: true,
-    pauseSubtitlesWithVideo: true
+    pauseSubtitlesWithVideo: true,
+    subNavigationEnabled: true,
+    subNavigationPlayOnSeek: true,
+    subNavigationPaddingMs: 150
   };
 
   // src/background/background.ts
@@ -181,7 +184,8 @@
             text: data.text || "",
             timestamp: data.timestamp,
             receivedAt: Date.now(),
-            durationMs: data.durationMs || currentSettings.autoFadeTimeoutMs
+            durationMs: data.durationMs,
+            lagMs: data.lagMs
           };
           if (cue.text.trim()) {
             lastCue = cue;

@@ -4,6 +4,7 @@ export interface SubtitleCue {
   timestamp?: string;
   receivedAt: number;
   durationMs?: number;
+  lagMs?: number;
 }
 
 export interface SubtitleHistoryEntry {
@@ -59,6 +60,9 @@ export interface ExtensionSettings {
   maxLines: number;
   stackMode: boolean;
   pauseSubtitlesWithVideo: boolean;
+  subNavigationEnabled: boolean;
+  subNavigationPlayOnSeek: boolean;
+  subNavigationPaddingMs: number;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -76,6 +80,9 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   maxLines: 3,
   stackMode: true,
   pauseSubtitlesWithVideo: true,
+  subNavigationEnabled: true,
+  subNavigationPlayOnSeek: true,
+  subNavigationPaddingMs: 150,
 };
 
 export type MessageToContent =

@@ -181,7 +181,8 @@ function connectToEventSource() {
           text: data.text || '',
           timestamp: data.timestamp,
           receivedAt: Date.now(),
-          durationMs: data.durationMs || currentSettings.autoFadeTimeoutMs,
+          durationMs: data.durationMs,
+          lagMs: data.lagMs,
         };
 
         if (cue.text.trim()) {

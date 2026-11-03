@@ -22,6 +22,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const fadeTimeoutInput = document.getElementById('fade-timeout') as HTMLInputElement;
   const fadeTimeoutVal = document.getElementById('fade-timeout-val') as HTMLSpanElement;
 
+  const subNavEnabledCheckbox = document.getElementById('sub-nav-enabled') as HTMLInputElement;
+  const subNavPlayCheckbox = document.getElementById('sub-nav-play') as HTMLInputElement;
+  const subNavPaddingInput = document.getElementById('sub-nav-padding') as HTMLInputElement;
+  const subNavPaddingVal = document.getElementById('sub-nav-padding-val') as HTMLSpanElement;
+
   const serverUrlInput = document.getElementById('server-url') as HTMLInputElement;
   const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
   const retryBtn = document.getElementById('retry-btn') as HTMLButtonElement;
@@ -69,6 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const fadeSecs = Math.round(settings.autoFadeTimeoutMs / 1000);
     fadeTimeoutInput.value = String(fadeSecs);
     fadeTimeoutVal.textContent = `${fadeSecs}s`;
+
+    subNavEnabledCheckbox.checked = settings.subNavigationEnabled ?? true;
+    subNavPlayCheckbox.checked = settings.subNavigationPlayOnSeek ?? true;
+    const padMs = settings.subNavigationPaddingMs ?? 150;
+    subNavPaddingInput.value = String(padMs);
+    subNavPaddingVal.textContent = `${padMs}ms`;
 
     serverUrlInput.value = settings.serverUrl;
   });
@@ -122,6 +133,19 @@ document.addEventListener('DOMContentLoaded', () => {
   fadeTimeoutInput.addEventListener('input', () => {
     fadeTimeoutVal.textContent = `${fadeTimeoutInput.value}s`;
     saveSetting({ autoFadeTimeoutMs: Number(fadeTimeoutInput.value) * 1000 });
+  });
+
+  subNavEnabledCheckbox.addEventListener('change', () => {
+    saveSetting({ subNavigationEnabled: subNavEnabledCheckbox.checked });
+  });
+
+  subNavPlayCheckbox.addEventListener('change', () => {
+    saveSetting({ subNavigationPlayOnSeek: subNavPlayCheckbox.checked });
+  });
+
+  subNavPaddingInput.addEventListener('input', () => {
+    subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
+    saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
   });
 
   // Connect button: saves the new URL and reconnects

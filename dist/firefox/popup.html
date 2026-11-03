@@ -79,6 +79,25 @@
     </div>
   </div>
 
+  <div class="section replay-section">
+    <div class="section-label">Smart Replay (asbplayer style)</div>
+
+    <div class="control-row row-flex">
+      <label for="sub-nav-enabled">Smart Replay on Left Arrow (←):</label>
+      <input type="checkbox" id="sub-nav-enabled" checked>
+    </div>
+
+    <div class="control-row row-flex">
+      <label for="sub-nav-play">Auto-play on replay when paused:</label>
+      <input type="checkbox" id="sub-nav-play" checked>
+    </div>
+
+    <div class="control-row">
+      <label for="sub-nav-padding">Replay Padding: <span id="sub-nav-padding-val">150ms</span></label>
+      <input type="range" id="sub-nav-padding" min="0" max="500" step="25" value="150">
+    </div>
+  </div>
+
   <div class="section server-section">
     <div class="section-label">Server Endpoint:</div>
     <div class="server-input-row">

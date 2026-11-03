@@ -139,10 +139,47 @@ chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, _sendR
   }
 });
 
+// Helper to ignore keystrokes when typing in inputs/textareas
+function isEditableElement(el: EventTarget | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  return (
+    el.isContentEditable ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+  );
+}
+
+// Global key listener for smart subtitle replay (asbplayer style Left Arrow)
+function setupKeyNavigation() {
+  window.addEventListener(
+    'keydown',
+    (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft') return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (isEditableElement(e.target)) return;
+      if (!settings.enabled || !settings.subNavigationEnabled) return;
+
+      const target = getTargetVideo();
+      if (!target) return;
+
+      const binding = bindings.get(target);
+      if (!binding) return;
+
+      const handled = binding.overlay.seekToPreviousSubtitle();
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    },
+    true // Capture phase: intercepts before Crunchyroll / video player default seek
+  );
+}
+
 // Setup continuous discovery
 function start() {
   initSettings();
   scanVideos();
+  setupKeyNavigation();
 
   // Periodic poll to catch SPAs & dynamic video changes
   setInterval(scanVideos, 1000);

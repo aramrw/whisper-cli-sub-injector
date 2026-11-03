@@ -18,6 +18,10 @@
     const maxLinesVal = document.getElementById("max-lines-val");
     const fadeTimeoutInput = document.getElementById("fade-timeout");
     const fadeTimeoutVal = document.getElementById("fade-timeout-val");
+    const subNavEnabledCheckbox = document.getElementById("sub-nav-enabled");
+    const subNavPlayCheckbox = document.getElementById("sub-nav-play");
+    const subNavPaddingInput = document.getElementById("sub-nav-padding");
+    const subNavPaddingVal = document.getElementById("sub-nav-padding-val");
     const serverUrlInput = document.getElementById("server-url");
     const connectBtn = document.getElementById("connect-btn");
     const retryBtn = document.getElementById("retry-btn");
@@ -57,6 +61,11 @@
       const fadeSecs = Math.round(settings.autoFadeTimeoutMs / 1e3);
       fadeTimeoutInput.value = String(fadeSecs);
       fadeTimeoutVal.textContent = `${fadeSecs}s`;
+      subNavEnabledCheckbox.checked = settings.subNavigationEnabled ?? true;
+      subNavPlayCheckbox.checked = settings.subNavigationPlayOnSeek ?? true;
+      const padMs = settings.subNavigationPaddingMs ?? 150;
+      subNavPaddingInput.value = String(padMs);
+      subNavPaddingVal.textContent = `${padMs}ms`;
       serverUrlInput.value = settings.serverUrl;
     });
     fetchCurrentStatus();
@@ -97,6 +106,16 @@
     fadeTimeoutInput.addEventListener("input", () => {
       fadeTimeoutVal.textContent = `${fadeTimeoutInput.value}s`;
       saveSetting({ autoFadeTimeoutMs: Number(fadeTimeoutInput.value) * 1e3 });
+    });
+    subNavEnabledCheckbox.addEventListener("change", () => {
+      saveSetting({ subNavigationEnabled: subNavEnabledCheckbox.checked });
+    });
+    subNavPlayCheckbox.addEventListener("change", () => {
+      saveSetting({ subNavigationPlayOnSeek: subNavPlayCheckbox.checked });
+    });
+    subNavPaddingInput.addEventListener("input", () => {
+      subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
+      saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
     });
     connectBtn.addEventListener("click", () => {
       const url = serverUrlInput.value.trim();

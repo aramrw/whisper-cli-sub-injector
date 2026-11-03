@@ -1,5 +1,13 @@
 import { ExtensionSettings, SubtitleCue } from '../common/types';
 
+export interface TimelineCue {
+  id: string;
+  text: string;
+  startTime: number;  // in video.currentTime seconds
+  endTime: number;    // in video.currentTime seconds
+  receivedAt: number;
+}
+
 let styleSheetInjected = false;
 function ensureSelectionStyle() {
   if (styleSheetInjected) return;
@@ -39,6 +47,9 @@ export class VideoOverlay {
   private isFullscreen = false;
   private activeCues: SubtitleCue[] = [];
   private isHovered = false;
+  private timeline: TimelineCue[] = [];
+  private activeReplayCue: TimelineCue | null = null;
+  private isReplaySeeking = false;
 
   constructor(video: HTMLMediaElement, settings: ExtensionSettings) {
     this.video = video;
@@ -138,9 +149,11 @@ export class VideoOverlay {
     // Video play/pause handlers for subtitle pause behavior
     const onPause = () => this.onVideoPause();
     const onPlay = () => this.onVideoPlay();
+    const onTimeUpdate = () => this.onTimeUpdate();
     this.video.addEventListener('pause', onPause);
     this.video.addEventListener('play', onPlay);
     this.video.addEventListener('playing', onPlay);
+    this.video.addEventListener('timeupdate', onTimeUpdate);
 
     // Pause auto-fade when hovering or highlighting text (essential for Yomitan scanning across lines)
     const onMouseEnter = () => {
@@ -176,6 +189,7 @@ export class VideoOverlay {
       this.video.removeEventListener('pause', onPause);
       this.video.removeEventListener('play', onPlay);
       this.video.removeEventListener('playing', onPlay);
+      this.video.removeEventListener('timeupdate', onTimeUpdate);
       this.stackContainer.removeEventListener('mouseenter', onMouseEnter);
       this.stackContainer.removeEventListener('mouseleave', onMouseLeave);
       this.stackContainer.removeEventListener('mousedown', stopProp);
@@ -328,6 +342,47 @@ export class VideoOverlay {
       }
     }
 
+    // Register timing in the video timeline for smart replay navigation
+    const nowVideo = this.video.currentTime;
+    const durSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1000 : 3.0;
+    const lagSec = cue.lagMs !== undefined && cue.lagMs >= 0 ? cue.lagMs / 1000 : 0.75;
+
+    const estimatedEnd = Math.max(0, nowVideo - lagSec);
+    const estimatedStart = Math.max(0, estimatedEnd - durSec);
+
+    // If new episode started (video currentTime jumped back close to 0 while we have old cues from deep in video):
+    if (nowVideo < 2.0 && this.timeline.length > 0 && this.timeline[this.timeline.length - 1].startTime > 30) {
+      this.timeline = [];
+    }
+
+    // Deduplication check:
+    // When the user replays dialogue with Left Arrow, Whisper will hear the audio a second time.
+    // Detect replayed lines matching recent cues in our timeline within ±8s of video time
+    const cleanText = cue.text.trim().toLowerCase();
+    const existingIndex = this.timeline.findIndex(
+      (c) => c.text.trim().toLowerCase() === cleanText && Math.abs(c.startTime - estimatedStart) < 8.0
+    );
+
+    if (existingIndex !== -1) {
+      // Replay echo! Update existing cue's bounds without creating duplicates or glitching
+      this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
+      return;
+    }
+
+    // Add to timeline
+    this.timeline.push({
+      id: cue.id,
+      text: cue.text,
+      startTime: estimatedStart,
+      endTime: estimatedEnd,
+      receivedAt: cue.receivedAt,
+    });
+
+    if (this.timeline.length > 100) {
+      this.timeline.shift();
+    }
+    this.timeline.sort((a, b) => a.startTime - b.startTime);
+
     // Avoid duplicate cues with same text arriving consecutively
     const lastCue = this.activeCues[this.activeCues.length - 1];
     if (lastCue && lastCue.text.trim() === cue.text.trim()) {
@@ -361,6 +416,127 @@ export class VideoOverlay {
         this.fadeRemainingMs = this.settings.autoFadeTimeoutMs || 6000;
       } else {
         this.scheduleFadeOut();
+      }
+    }
+  }
+
+  seekToPreviousSubtitle(): boolean {
+    if (!this.settings.subNavigationEnabled) return false;
+    if (this.timeline.length === 0) return false;
+
+    const vPos = this.video.currentTime;
+    const padSec = (this.settings.subNavigationPaddingMs || 150) / 1000;
+
+    let targetCue: TimelineCue | null = null;
+
+    // Scan backwards from latest to earliest in timeline
+    for (let i = this.timeline.length - 1; i >= 0; i--) {
+      const c = this.timeline[i];
+      // Is vPos inside this cue or just finished (up to 2.5s after endTime)?
+      if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 2.5) {
+        const targetSeekPos = Math.max(0, c.startTime - padSec);
+        // Did we already jump to the start of this cue? (or within 0.45s of it)
+        if (Math.abs(vPos - targetSeekPos) < 0.45 || (vPos < targetSeekPos + 0.35 && vPos >= targetSeekPos - 0.25)) {
+          // User wants to jump to the cue before this one!
+          if (i > 0) {
+            targetCue = this.timeline[i - 1];
+            break;
+          }
+        } else {
+          // Replay this cue from the start!
+          targetCue = c;
+          break;
+        }
+      } else if (c.endTime < vPos) {
+        // Cue ended prior to vPos. If within 10s of quiet / silence, seek back to it!
+        if (targetCue === null && (vPos - c.endTime) <= 10.0) {
+          targetCue = c;
+          break;
+        }
+      }
+    }
+
+    if (!targetCue) {
+      return false;
+    }
+
+    const seekTime = Math.max(0, targetCue.startTime - padSec);
+    this.activeReplayCue = targetCue;
+    this.isReplaySeeking = true;
+
+    // Seek the video element directly
+    this.video.currentTime = seekTime;
+
+    // If video was paused and auto-play on replay is enabled, resume playback
+    if (this.video.paused && this.settings.subNavigationPlayOnSeek) {
+      this.video.play().catch(() => {});
+    }
+
+    // Instantly display the replayed subtitle so the user can read it on replay
+    this.displayReplayCue(targetCue);
+
+    setTimeout(() => {
+      this.isReplaySeeking = false;
+    }, 250);
+
+    return true;
+  }
+
+  private displayReplayCue(cue: TimelineCue) {
+    if (!this.settings.enabled) return;
+
+    const subCue: SubtitleCue = {
+      id: cue.id,
+      text: cue.text,
+      receivedAt: Date.now(),
+      durationMs: (cue.endTime - cue.startTime) * 1000,
+    };
+
+    this.activeCues = [subCue];
+    this.renderStack();
+    this.container.style.setProperty('opacity', '1', 'important');
+
+    if (this.fadeTimer) {
+      clearTimeout(this.fadeTimer);
+      this.fadeTimer = null;
+    }
+
+    if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+      this.fadeRemainingMs = this.settings.autoFadeTimeoutMs || 6000;
+    }
+  }
+
+  private onTimeUpdate() {
+    if (!this.settings.enabled) return;
+    if (this.isReplaySeeking) return;
+
+    const vPos = this.video.currentTime;
+    const padSec = (this.settings.subNavigationPaddingMs || 150) / 1000;
+
+    // 1. If currently replaying an active cue:
+    if (this.activeReplayCue) {
+      if (vPos > this.activeReplayCue.endTime + padSec) {
+        // Dialogue has finished! Clean fade out
+        this.activeReplayCue = null;
+        this.scheduleFadeOut(600);
+      } else if (vPos < this.activeReplayCue.startTime - padSec - 1.5) {
+        // User sought away backwards
+        this.activeReplayCue = null;
+      }
+      return;
+    }
+
+    // 2. Check if current playback position enters any known timeline cue:
+    if (!this.isHovered && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
+      for (const cue of this.timeline) {
+        if (vPos >= cue.startTime - padSec && vPos <= cue.endTime + padSec) {
+          const lastActive = this.activeCues[this.activeCues.length - 1];
+          if (!lastActive || lastActive.text.trim() !== cue.text.trim()) {
+            this.displayReplayCue(cue);
+            this.activeReplayCue = cue;
+          }
+          break;
+        }
       }
     }
   }
