@@ -32,6 +32,9 @@ export class VideoOverlay {
   private stackContainer: HTMLDivElement;
   private settings: ExtensionSettings;
   private fadeTimer: any = null;
+  private fadeTargetTime = 0;
+  private fadeRemainingMs = 0;
+  private pausedAt = 0;
   private resizeObserver: ResizeObserver | null = null;
   private isFullscreen = false;
   private activeCues: SubtitleCue[] = [];
@@ -81,6 +84,31 @@ export class VideoOverlay {
     this.updatePosition();
   }
 
+  private onVideoPause() {
+    this.pausedAt = Date.now();
+    if (this.settings.pauseSubtitlesWithVideo) {
+      if (this.fadeTimer) {
+        this.fadeRemainingMs = Math.max(1000, this.fadeTargetTime - Date.now());
+        clearTimeout(this.fadeTimer);
+        this.fadeTimer = null;
+      } else if (this.activeCues.length > 0) {
+        this.fadeRemainingMs = this.settings.autoFadeTimeoutMs;
+      }
+      // Ensure subtitles remain frozen in place on screen while paused
+      if (this.activeCues.length > 0 && this.container) {
+        this.container.style.setProperty('opacity', '1', 'important');
+      }
+    }
+  }
+
+  private onVideoPlay() {
+    this.pausedAt = 0;
+    if (this.settings.pauseSubtitlesWithVideo && this.activeCues.length > 0) {
+      const remaining = this.fadeRemainingMs > 0 ? this.fadeRemainingMs : this.settings.autoFadeTimeoutMs;
+      this.scheduleFadeOut(remaining);
+    }
+  }
+
   private setupListeners() {
     // Fullscreen change
     const onFullscreen = () => {
@@ -107,6 +135,13 @@ export class VideoOverlay {
     this.video.addEventListener('play', onWindowChange);
     this.video.addEventListener('loadedmetadata', onWindowChange);
 
+    // Video play/pause handlers for subtitle pause behavior
+    const onPause = () => this.onVideoPause();
+    const onPlay = () => this.onVideoPlay();
+    this.video.addEventListener('pause', onPause);
+    this.video.addEventListener('play', onPlay);
+    this.video.addEventListener('playing', onPlay);
+
     // Pause auto-fade when hovering or highlighting text (essential for Yomitan scanning across lines)
     const onMouseEnter = () => {
       this.isHovered = true;
@@ -117,7 +152,9 @@ export class VideoOverlay {
     };
     const onMouseLeave = () => {
       this.isHovered = false;
-      this.scheduleFadeOut();
+      if (!this.video.paused || !this.settings.pauseSubtitlesWithVideo) {
+        this.scheduleFadeOut();
+      }
     };
     this.stackContainer.addEventListener('mouseenter', onMouseEnter);
     this.stackContainer.addEventListener('mouseleave', onMouseLeave);
@@ -136,6 +173,9 @@ export class VideoOverlay {
       window.removeEventListener('scroll', onWindowChange);
       this.video.removeEventListener('play', onWindowChange);
       this.video.removeEventListener('loadedmetadata', onWindowChange);
+      this.video.removeEventListener('pause', onPause);
+      this.video.removeEventListener('play', onPlay);
+      this.video.removeEventListener('playing', onPlay);
       this.stackContainer.removeEventListener('mouseenter', onMouseEnter);
       this.stackContainer.removeEventListener('mouseleave', onMouseLeave);
       this.stackContainer.removeEventListener('mousedown', stopProp);
@@ -280,6 +320,14 @@ export class VideoOverlay {
   showCue(cue: SubtitleCue) {
     if (!this.settings.enabled) return;
 
+    // If video is paused and pauseSubtitlesWithVideo is active:
+    // If paused for more than 4s, ignore stray background/mic audio so it doesn't overwrite frozen paused subtitles
+    if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+      if (this.pausedAt > 0 && (Date.now() - this.pausedAt > 4000)) {
+        return;
+      }
+    }
+
     // Avoid duplicate cues with same text arriving consecutively
     const lastCue = this.activeCues[this.activeCues.length - 1];
     if (lastCue && lastCue.text.trim() === cue.text.trim()) {
@@ -308,18 +356,32 @@ export class VideoOverlay {
     }
 
     if (!this.isHovered) {
-      this.scheduleFadeOut();
+      if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+        // Keep visible indefinitely while paused; save default timeout for when play resumes
+        this.fadeRemainingMs = this.settings.autoFadeTimeoutMs || 6000;
+      } else {
+        this.scheduleFadeOut();
+      }
     }
   }
 
-  private scheduleFadeOut() {
+  private scheduleFadeOut(customMs?: number) {
     if (this.fadeTimer) {
       clearTimeout(this.fadeTimer);
       this.fadeTimer = null;
     }
-    const duration = this.settings.autoFadeTimeoutMs || 6000;
+
+    // Never fade out while paused if pauseSubtitlesWithVideo is enabled
+    if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+      return;
+    }
+
+    const duration = customMs || this.settings.autoFadeTimeoutMs || 6000;
+    this.fadeTargetTime = Date.now() + duration;
+    this.fadeRemainingMs = duration;
+
     this.fadeTimer = setTimeout(() => {
-      if (!this.isHovered) {
+      if (!this.isHovered && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
         this.hide();
       }
     }, duration);
@@ -333,6 +395,7 @@ export class VideoOverlay {
       clearTimeout(this.fadeTimer);
       this.fadeTimer = null;
     }
+    this.fadeRemainingMs = 0;
     setTimeout(() => {
       if (this.container && this.container.style.opacity === '0') {
         this.activeCues = [];

@@ -1,6 +1,28 @@
 "use strict";
 (() => {
   // src/common/types.ts
+  var DEFAULT_HISTORY_SETTINGS = {
+    retentionDuration: "24h",
+    maxEntries: 1e3
+  };
+  function getRetentionMs(duration) {
+    switch (duration) {
+      case "1h":
+        return 60 * 60 * 1e3;
+      case "6h":
+        return 6 * 60 * 60 * 1e3;
+      case "24h":
+        return 24 * 60 * 60 * 1e3;
+      case "7d":
+        return 7 * 24 * 60 * 60 * 1e3;
+      case "30d":
+        return 30 * 24 * 60 * 60 * 1e3;
+      case "forever":
+        return Infinity;
+      default:
+        return 24 * 60 * 60 * 1e3;
+    }
+  }
   var DEFAULT_SETTINGS = {
     serverUrl: "http://127.0.0.1:8989",
     enabled: true,
@@ -14,11 +36,14 @@
     outlineColor: "#000000",
     autoFadeTimeoutMs: 6e3,
     maxLines: 3,
-    stackMode: true
+    stackMode: true,
+    pauseSubtitlesWithVideo: true
   };
 
   // src/background/background.ts
   var currentSettings = { ...DEFAULT_SETTINGS };
+  var historySettings = { ...DEFAULT_HISTORY_SETTINGS };
+  var historyCache = [];
   var eventSource = null;
   var isConnected = false;
   var reconnectTimer = null;
@@ -30,6 +55,60 @@
         currentSettings = { ...DEFAULT_SETTINGS, ...items };
         resolve(currentSettings);
       });
+    });
+  }
+  async function loadHistory() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(["subtitleHistory", "historySettings"], (result) => {
+        if (result.historySettings) {
+          historySettings = { ...DEFAULT_HISTORY_SETTINGS, ...result.historySettings };
+        }
+        if (Array.isArray(result.subtitleHistory)) {
+          historyCache = result.subtitleHistory;
+        } else {
+          historyCache = [];
+        }
+        pruneHistory();
+        resolve();
+      });
+    });
+  }
+  function pruneHistory() {
+    const retentionMs = getRetentionMs(historySettings.retentionDuration);
+    const cutoff = retentionMs === Infinity ? 0 : Date.now() - retentionMs;
+    const initialLen = historyCache.length;
+    let filtered = historyCache.filter((item) => item.receivedAt >= cutoff);
+    if (filtered.length > historySettings.maxEntries) {
+      filtered = filtered.slice(filtered.length - historySettings.maxEntries);
+    }
+    const changed = filtered.length !== initialLen;
+    if (changed) {
+      historyCache = filtered;
+      chrome.storage.local.set({ subtitleHistory: historyCache });
+    }
+    return changed;
+  }
+  async function addCueToHistory(cue) {
+    const entry = {
+      id: cue.id,
+      text: cue.text,
+      timestamp: cue.timestamp,
+      receivedAt: cue.receivedAt
+    };
+    historyCache.push(entry);
+    const retentionMs = getRetentionMs(historySettings.retentionDuration);
+    const cutoff = retentionMs === Infinity ? 0 : Date.now() - retentionMs;
+    if (cutoff > 0) {
+      historyCache = historyCache.filter((item) => item.receivedAt >= cutoff);
+    }
+    if (historyCache.length > historySettings.maxEntries) {
+      historyCache = historyCache.slice(historyCache.length - historySettings.maxEntries);
+    }
+    await chrome.storage.local.set({ subtitleHistory: historyCache });
+    chrome.runtime.sendMessage({
+      type: "NEW_HISTORY_ENTRY",
+      entry
+    }).catch(() => {
     });
   }
   function updateBadge() {
@@ -54,6 +133,19 @@
       }
     });
   }
+  function notifyStatus(connected) {
+    chrome.runtime.sendMessage({
+      type: "SERVER_STATUS",
+      connected,
+      url: currentSettings.serverUrl
+    }).catch(() => {
+    });
+    broadcastToTabs({
+      type: "SERVER_STATUS",
+      connected,
+      url: currentSettings.serverUrl
+    });
+  }
   function connectToEventSource() {
     if (eventSource) {
       eventSource.close();
@@ -66,6 +158,7 @@
     if (!currentSettings.enabled) {
       isConnected = false;
       updateBadge();
+      notifyStatus(false);
       return;
     }
     const sseUrl = `${currentSettings.serverUrl.replace(/\/+$/, "")}/events`;
@@ -77,11 +170,7 @@
         isConnected = true;
         reconnectAttempts = 0;
         updateBadge();
-        broadcastToTabs({
-          type: "SERVER_STATUS",
-          connected: true,
-          url: currentSettings.serverUrl
-        });
+        notifyStatus(true);
       };
       eventSource.onmessage = (event) => {
         try {
@@ -96,6 +185,7 @@
           };
           if (cue.text.trim()) {
             lastCue = cue;
+            addCueToHistory(cue);
             broadcastToTabs({ type: "NEW_SUBTITLE", cue });
           }
         } catch (err) {
@@ -105,11 +195,7 @@
       eventSource.onerror = () => {
         isConnected = false;
         updateBadge();
-        broadcastToTabs({
-          type: "SERVER_STATUS",
-          connected: false,
-          url: currentSettings.serverUrl
-        });
+        notifyStatus(false);
         if (eventSource) {
           eventSource.close();
           eventSource = null;
@@ -124,6 +210,7 @@
       console.error("[whisper-cli-sub-injector] Error creating EventSource:", err);
       isConnected = false;
       updateBadge();
+      notifyStatus(false);
       reconnectTimer = setTimeout(connectToEventSource, 3e3);
     }
   }
@@ -154,15 +241,47 @@
     if (message.type === "RECONNECT") {
       reconnectAttempts = 0;
       connectToEventSource();
-      sendResponse({ success: true });
+      sendResponse({ success: true, connected: isConnected });
       return true;
     }
     if (message.type === "PING") {
       sendResponse({ pong: true, connected: isConnected });
       return true;
     }
+    if (message.type === "GET_HISTORY") {
+      pruneHistory();
+      sendResponse({
+        history: historyCache,
+        settings: historySettings
+      });
+      return true;
+    }
+    if (message.type === "GET_HISTORY_SETTINGS") {
+      sendResponse(historySettings);
+      return true;
+    }
+    if (message.type === "UPDATE_HISTORY_SETTINGS") {
+      historySettings = { ...historySettings, ...message.settings };
+      chrome.storage.local.set({ historySettings }, () => {
+        pruneHistory();
+        sendResponse({ success: true, settings: historySettings });
+      });
+      return true;
+    }
+    if (message.type === "CLEAR_HISTORY") {
+      historyCache = [];
+      chrome.storage.local.set({ subtitleHistory: [] }, () => {
+        chrome.runtime.sendMessage({ type: "HISTORY_CLEARED" }).catch(() => {
+        });
+        sendResponse({ success: true });
+      });
+      return true;
+    }
   });
-  loadSettings().then(() => {
+  setInterval(() => {
+    pruneHistory();
+  }, 5 * 60 * 1e3);
+  Promise.all([loadSettings(), loadHistory()]).then(() => {
     updateBadge();
     connectToEventSource();
   });

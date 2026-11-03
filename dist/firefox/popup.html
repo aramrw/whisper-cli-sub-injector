@@ -24,12 +24,22 @@
     </div>
   </div>
 
-  <div class="section preview-section">
-    <div class="section-label">Latest Live Subtitle:</div>
-    <div class="preview-box" id="latest-sub">Waiting for speech from whisper-cli...</div>
+  <div class="history-action-box">
+    <button id="open-history-btn" class="btn btn-history">
+      <span class="btn-icon">📜</span>
+      <span class="btn-label">Open Subtitle History</span>
+      <span class="btn-arrow">↗</span>
+    </button>
   </div>
 
   <div class="section settings-section">
+    <div class="section-label">Display & Behavior</div>
+
+    <div class="control-row row-flex">
+      <label for="pause-with-video">Pause subs when video pauses:</label>
+      <input type="checkbox" id="pause-with-video" checked>
+    </div>
+
     <div class="control-row">
       <label for="font-size">Font Size: <span id="font-size-val">28px</span></label>
       <input type="range" id="font-size" min="16" max="52" value="28">
@@ -64,8 +74,8 @@
     </div>
 
     <div class="control-row">
-      <label for="fade-timeout">Fade-out Delay: <span id="fade-timeout-val">5s</span></label>
-      <input type="range" id="fade-timeout" min="2" max="15" value="5">
+      <label for="fade-timeout">Fade-out Delay: <span id="fade-timeout-val">6s</span></label>
+      <input type="range" id="fade-timeout" min="2" max="15" value="6">
     </div>
   </div>
 
@@ -73,7 +83,8 @@
     <div class="section-label">Server Endpoint:</div>
     <div class="server-input-row">
       <input type="text" id="server-url" value="http://127.0.0.1:8989" placeholder="http://127.0.0.1:8989">
-      <button id="reconnect-btn" class="btn">Connect</button>
+      <button id="connect-btn" class="btn btn-primary" title="Save endpoint and connect">Connect</button>
+      <button id="retry-btn" class="btn btn-secondary-btn" title="Force retry connection">Retry</button>
     </div>
   </div>
 

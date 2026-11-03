@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper Subtitle History</title>
+  <link rel="stylesheet" href="history.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Header -->
+    <header class="top-nav">
+      <div class="brand">
+        <span class="brand-icon">🎧</span>
+        <div class="brand-text">
+          <h1>Whisper Live Subtitles</h1>
+          <span class="brand-subtitle">Transcription History & Archives</span>
+        </div>
+      </div>
+
+      <div class="nav-status-group">
+        <div class="status-badge" id="status-badge">
+          <span class="status-dot disconnected" id="status-dot"></span>
+          <span class="status-text" id="status-text">Connecting...</span>
+        </div>
+        <div class="count-badge" id="count-badge">0 Subtitles</div>
+      </div>
+    </header>
+
+    <!-- Controls & Retention Toolbar -->
+    <div class="control-toolbar">
+      <div class="retention-controls">
+        <div class="control-item">
+          <label for="retention-duration">Save History For:</label>
+          <select id="retention-duration" class="styled-select">
+            <option value="1h">1 Hour</option>
+            <option value="6h">6 Hours</option>
+            <option value="24h" selected>24 Hours (1 Day)</option>
+            <option value="7d">7 Days</option>
+            <option value="30d">30 Days</option>
+            <option value="forever">Forever (No time limit)</option>
+          </select>
+        </div>
+
+        <div class="control-item">
+          <label for="max-entries">Max Saved Lines:</label>
+          <select id="max-entries" class="styled-select">
+            <option value="200">200 entries</option>
+            <option value="500">500 entries</option>
+            <option value="1000" selected>1,000 entries</option>
+            <option value="5000">5,000 entries</option>
+            <option value="10000">10,000 entries</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="filter-actions-group">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="search-input" placeholder="Search transcript history..." />
+          <button id="clear-search-btn" class="clear-search-btn" title="Clear filter" style="display: none;">✕</button>
+        </div>
+
+        <div class="action-buttons">
+          <label class="auto-scroll-toggle" title="Automatically keep newest subtitle in view">
+            <input type="checkbox" id="auto-scroll-toggle" checked />
+            <span class="toggle-label">Auto-scroll</span>
+          </label>
+
+          <div class="dropdown">
+            <button id="export-btn" class="btn btn-secondary">
+              <span>📥 Export</span>
+              <span class="caret">▾</span>
+            </button>
+            <div class="dropdown-menu" id="export-menu">
+              <button class="dropdown-item" id="export-txt">Export as Plain Text (.txt)</button>
+              <button class="dropdown-item" id="export-srt">Export as Subtitles (.srt)</button>
+              <button class="dropdown-item" id="export-json">Export as JSON (.json)</button>
+            </div>
+          </div>
+
+          <button id="clear-history-btn" class="btn btn-danger" title="Clear all history">
+            <span>🗑️ Clear History</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Subtitle History Container -->
+    <main class="history-content">
+      <div id="subtitle-list" class="subtitle-list">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state" style="display: none;">
+        <div class="empty-icon">💬</div>
+        <h2>No Subtitles In History Yet</h2>
+        <p>Subtitles transcribed by whisper-cli will automatically stream and archive here in real time.</p>
+        <div class="empty-tips">
+          <span class="tip-badge">Tip</span> Subtitles pause automatically when your video pauses, and you can highlight any text to copy or look up with Yomitan!
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer Stats -->
+    <footer class="history-footer">
+      <span id="footer-stats">Showing 0 of 0 subtitles</span>
+      <span class="footer-hint">Live archive powered by whisper-cli</span>
+    </footer>
+  </div>
+
+  <script src="history.js"></script>
+</body>
+</html>

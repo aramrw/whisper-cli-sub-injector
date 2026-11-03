@@ -18,6 +18,7 @@ async function buildTarget(target) {
       background: path.join(SRC, 'background/background.ts'),
       content: path.join(SRC, 'content/content.ts'),
       popup: path.join(SRC, 'popup/popup.ts'),
+      history: path.join(SRC, 'history/history.ts'),
     },
     bundle: true,
     outdir: outDir,
@@ -31,6 +32,8 @@ async function buildTarget(target) {
   // 2. Copy static files
   fs.copyFileSync(path.join(SRC, 'popup/popup.html'), path.join(outDir, 'popup.html'));
   fs.copyFileSync(path.join(SRC, 'popup/popup.css'), path.join(outDir, 'popup.css'));
+  fs.copyFileSync(path.join(SRC, 'history/history.html'), path.join(outDir, 'history.html'));
+  fs.copyFileSync(path.join(SRC, 'history/history.css'), path.join(outDir, 'history.css'));
 
   // Copy icons
   const iconDestDir = path.join(outDir, 'icons');

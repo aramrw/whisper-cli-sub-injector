@@ -6,6 +6,44 @@ export interface SubtitleCue {
   durationMs?: number;
 }
 
+export interface SubtitleHistoryEntry {
+  id: string;
+  text: string;
+  timestamp?: string;
+  receivedAt: number;
+}
+
+export type HistoryRetentionDuration = '1h' | '6h' | '24h' | '7d' | '30d' | 'forever';
+
+export interface HistorySettings {
+  retentionDuration: HistoryRetentionDuration;
+  maxEntries: number;
+}
+
+export const DEFAULT_HISTORY_SETTINGS: HistorySettings = {
+  retentionDuration: '24h',
+  maxEntries: 1000,
+};
+
+export function getRetentionMs(duration: HistoryRetentionDuration): number {
+  switch (duration) {
+    case '1h':
+      return 60 * 60 * 1000;
+    case '6h':
+      return 6 * 60 * 60 * 1000;
+    case '24h':
+      return 24 * 60 * 60 * 1000;
+    case '7d':
+      return 7 * 24 * 60 * 60 * 1000;
+    case '30d':
+      return 30 * 24 * 60 * 60 * 1000;
+    case 'forever':
+      return Infinity;
+    default:
+      return 24 * 60 * 60 * 1000;
+  }
+}
+
 export interface ExtensionSettings {
   serverUrl: string;
   enabled: boolean;
@@ -20,6 +58,7 @@ export interface ExtensionSettings {
   autoFadeTimeoutMs: number;
   maxLines: number;
   stackMode: boolean;
+  pauseSubtitlesWithVideo: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -36,6 +75,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   autoFadeTimeoutMs: 6000,
   maxLines: 3,
   stackMode: true,
+  pauseSubtitlesWithVideo: true,
 };
 
 export type MessageToContent =
@@ -49,4 +89,13 @@ export type MessageToBackground =
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<ExtensionSettings> }
   | { type: 'RECONNECT' }
-  | { type: 'PING' };
+  | { type: 'PING' }
+  | { type: 'GET_HISTORY' }
+  | { type: 'GET_HISTORY_SETTINGS' }
+  | { type: 'UPDATE_HISTORY_SETTINGS'; settings: Partial<HistorySettings> }
+  | { type: 'CLEAR_HISTORY' };
+
+export type BroadcastMessage =
+  | MessageToContent
+  | { type: 'NEW_HISTORY_ENTRY'; entry: SubtitleHistoryEntry }
+  | { type: 'HISTORY_CLEARED' };

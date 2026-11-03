@@ -1,6 +1,19 @@
-import { DEFAULT_SETTINGS, ExtensionSettings, MessageToBackground, MessageToContent, SubtitleCue } from '../common/types';
+import {
+  DEFAULT_HISTORY_SETTINGS,
+  DEFAULT_SETTINGS,
+  ExtensionSettings,
+  getRetentionMs,
+  HistorySettings,
+  MessageToBackground,
+  MessageToContent,
+  SubtitleCue,
+  SubtitleHistoryEntry,
+} from '../common/types';
 
 let currentSettings: ExtensionSettings = { ...DEFAULT_SETTINGS };
+let historySettings: HistorySettings = { ...DEFAULT_HISTORY_SETTINGS };
+let historyCache: SubtitleHistoryEntry[] = [];
+
 let eventSource: EventSource | null = null;
 let isConnected = false;
 let reconnectTimer: any = null;
@@ -14,6 +27,72 @@ async function loadSettings(): Promise<ExtensionSettings> {
       currentSettings = { ...DEFAULT_SETTINGS, ...(items as ExtensionSettings) };
       resolve(currentSettings);
     });
+  });
+}
+
+// Load history & history settings from storage.local
+async function loadHistory(): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['subtitleHistory', 'historySettings'], (result) => {
+      if (result.historySettings) {
+        historySettings = { ...DEFAULT_HISTORY_SETTINGS, ...result.historySettings };
+      }
+      if (Array.isArray(result.subtitleHistory)) {
+        historyCache = result.subtitleHistory;
+      } else {
+        historyCache = [];
+      }
+      pruneHistory();
+      resolve();
+    });
+  });
+}
+
+function pruneHistory(): boolean {
+  const retentionMs = getRetentionMs(historySettings.retentionDuration);
+  const cutoff = retentionMs === Infinity ? 0 : Date.now() - retentionMs;
+  const initialLen = historyCache.length;
+
+  let filtered = historyCache.filter((item) => item.receivedAt >= cutoff);
+  if (filtered.length > historySettings.maxEntries) {
+    filtered = filtered.slice(filtered.length - historySettings.maxEntries);
+  }
+
+  const changed = filtered.length !== initialLen;
+  if (changed) {
+    historyCache = filtered;
+    chrome.storage.local.set({ subtitleHistory: historyCache });
+  }
+  return changed;
+}
+
+async function addCueToHistory(cue: SubtitleCue): Promise<void> {
+  const entry: SubtitleHistoryEntry = {
+    id: cue.id,
+    text: cue.text,
+    timestamp: cue.timestamp,
+    receivedAt: cue.receivedAt,
+  };
+
+  historyCache.push(entry);
+
+  const retentionMs = getRetentionMs(historySettings.retentionDuration);
+  const cutoff = retentionMs === Infinity ? 0 : Date.now() - retentionMs;
+  if (cutoff > 0) {
+    historyCache = historyCache.filter((item) => item.receivedAt >= cutoff);
+  }
+  if (historyCache.length > historySettings.maxEntries) {
+    historyCache = historyCache.slice(historyCache.length - historySettings.maxEntries);
+  }
+
+  await chrome.storage.local.set({ subtitleHistory: historyCache });
+
+  // Broadcast to open extension pages (e.g. History page)
+  chrome.runtime.sendMessage({
+    type: 'NEW_HISTORY_ENTRY',
+    entry,
+  }).catch(() => {
+    // Popup or history page might not be open
   });
 }
 
@@ -42,6 +121,24 @@ function broadcastToTabs(message: MessageToContent) {
   });
 }
 
+function notifyStatus(connected: boolean) {
+  // 1. Notify open extension views (popup, history tab)
+  chrome.runtime.sendMessage({
+    type: 'SERVER_STATUS',
+    connected,
+    url: currentSettings.serverUrl,
+  }).catch(() => {
+    // Popup or other views may be closed
+  });
+
+  // 2. Broadcast to content script tabs
+  broadcastToTabs({
+    type: 'SERVER_STATUS',
+    connected,
+    url: currentSettings.serverUrl,
+  });
+}
+
 function connectToEventSource() {
   if (eventSource) {
     eventSource.close();
@@ -56,6 +153,7 @@ function connectToEventSource() {
   if (!currentSettings.enabled) {
     isConnected = false;
     updateBadge();
+    notifyStatus(false);
     return;
   }
 
@@ -70,11 +168,7 @@ function connectToEventSource() {
       isConnected = true;
       reconnectAttempts = 0;
       updateBadge();
-      broadcastToTabs({
-        type: 'SERVER_STATUS',
-        connected: true,
-        url: currentSettings.serverUrl,
-      });
+      notifyStatus(true);
     };
 
     eventSource.onmessage = (event) => {
@@ -92,6 +186,7 @@ function connectToEventSource() {
 
         if (cue.text.trim()) {
           lastCue = cue;
+          addCueToHistory(cue);
           broadcastToTabs({ type: 'NEW_SUBTITLE', cue });
         }
       } catch (err) {
@@ -102,11 +197,7 @@ function connectToEventSource() {
     eventSource.onerror = () => {
       isConnected = false;
       updateBadge();
-      broadcastToTabs({
-        type: 'SERVER_STATUS',
-        connected: false,
-        url: currentSettings.serverUrl,
-      });
+      notifyStatus(false);
 
       if (eventSource) {
         eventSource.close();
@@ -124,11 +215,12 @@ function connectToEventSource() {
     console.error('[whisper-cli-sub-injector] Error creating EventSource:', err);
     isConnected = false;
     updateBadge();
+    notifyStatus(false);
     reconnectTimer = setTimeout(connectToEventSource, 3000);
   }
 }
 
-// Handle messages from popup or content scripts
+// Handle messages from popup, history tab, or content scripts
 chrome.runtime.onMessage.addListener((message: MessageToBackground, _sender, sendResponse) => {
   if (message.type === 'GET_STATUS') {
     sendResponse({
@@ -159,7 +251,7 @@ chrome.runtime.onMessage.addListener((message: MessageToBackground, _sender, sen
   if (message.type === 'RECONNECT') {
     reconnectAttempts = 0;
     connectToEventSource();
-    sendResponse({ success: true });
+    sendResponse({ success: true, connected: isConnected });
     return true;
   }
 
@@ -167,10 +259,47 @@ chrome.runtime.onMessage.addListener((message: MessageToBackground, _sender, sen
     sendResponse({ pong: true, connected: isConnected });
     return true;
   }
+
+  if (message.type === 'GET_HISTORY') {
+    pruneHistory();
+    sendResponse({
+      history: historyCache,
+      settings: historySettings,
+    });
+    return true;
+  }
+
+  if (message.type === 'GET_HISTORY_SETTINGS') {
+    sendResponse(historySettings);
+    return true;
+  }
+
+  if (message.type === 'UPDATE_HISTORY_SETTINGS') {
+    historySettings = { ...historySettings, ...message.settings };
+    chrome.storage.local.set({ historySettings }, () => {
+      pruneHistory();
+      sendResponse({ success: true, settings: historySettings });
+    });
+    return true;
+  }
+
+  if (message.type === 'CLEAR_HISTORY') {
+    historyCache = [];
+    chrome.storage.local.set({ subtitleHistory: [] }, () => {
+      chrome.runtime.sendMessage({ type: 'HISTORY_CLEARED' }).catch(() => {});
+      sendResponse({ success: true });
+    });
+    return true;
+  }
 });
 
+// Periodic pruning of old history (every 5 minutes)
+setInterval(() => {
+  pruneHistory();
+}, 5 * 60 * 1000);
+
 // Initialize on startup
-loadSettings().then(() => {
+Promise.all([loadSettings(), loadHistory()]).then(() => {
   updateBadge();
   connectToEventSource();
 });

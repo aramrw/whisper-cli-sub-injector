@@ -14,7 +14,8 @@
     outlineColor: "#000000",
     autoFadeTimeoutMs: 6e3,
     maxLines: 3,
-    stackMode: true
+    stackMode: true,
+    pauseSubtitlesWithVideo: true
   };
 
   // src/content/overlay.ts
@@ -49,6 +50,9 @@
     stackContainer;
     settings;
     fadeTimer = null;
+    fadeTargetTime = 0;
+    fadeRemainingMs = 0;
+    pausedAt = 0;
     resizeObserver = null;
     isFullscreen = false;
     activeCues = [];
@@ -89,6 +93,28 @@
       }
       this.updatePosition();
     }
+    onVideoPause() {
+      this.pausedAt = Date.now();
+      if (this.settings.pauseSubtitlesWithVideo) {
+        if (this.fadeTimer) {
+          this.fadeRemainingMs = Math.max(1e3, this.fadeTargetTime - Date.now());
+          clearTimeout(this.fadeTimer);
+          this.fadeTimer = null;
+        } else if (this.activeCues.length > 0) {
+          this.fadeRemainingMs = this.settings.autoFadeTimeoutMs;
+        }
+        if (this.activeCues.length > 0 && this.container) {
+          this.container.style.setProperty("opacity", "1", "important");
+        }
+      }
+    }
+    onVideoPlay() {
+      this.pausedAt = 0;
+      if (this.settings.pauseSubtitlesWithVideo && this.activeCues.length > 0) {
+        const remaining = this.fadeRemainingMs > 0 ? this.fadeRemainingMs : this.settings.autoFadeTimeoutMs;
+        this.scheduleFadeOut(remaining);
+      }
+    }
     setupListeners() {
       const onFullscreen = () => {
         this.attach();
@@ -107,6 +133,11 @@
       window.addEventListener("scroll", onWindowChange, { passive: true });
       this.video.addEventListener("play", onWindowChange);
       this.video.addEventListener("loadedmetadata", onWindowChange);
+      const onPause = () => this.onVideoPause();
+      const onPlay = () => this.onVideoPlay();
+      this.video.addEventListener("pause", onPause);
+      this.video.addEventListener("play", onPlay);
+      this.video.addEventListener("playing", onPlay);
       const onMouseEnter = () => {
         this.isHovered = true;
         if (this.fadeTimer) {
@@ -116,7 +147,9 @@
       };
       const onMouseLeave = () => {
         this.isHovered = false;
-        this.scheduleFadeOut();
+        if (!this.video.paused || !this.settings.pauseSubtitlesWithVideo) {
+          this.scheduleFadeOut();
+        }
       };
       this.stackContainer.addEventListener("mouseenter", onMouseEnter);
       this.stackContainer.addEventListener("mouseleave", onMouseLeave);
@@ -131,6 +164,9 @@
         window.removeEventListener("scroll", onWindowChange);
         this.video.removeEventListener("play", onWindowChange);
         this.video.removeEventListener("loadedmetadata", onWindowChange);
+        this.video.removeEventListener("pause", onPause);
+        this.video.removeEventListener("play", onPlay);
+        this.video.removeEventListener("playing", onPlay);
         this.stackContainer.removeEventListener("mouseenter", onMouseEnter);
         this.stackContainer.removeEventListener("mouseleave", onMouseLeave);
         this.stackContainer.removeEventListener("mousedown", stopProp);
@@ -248,6 +284,11 @@
     }
     showCue(cue) {
       if (!this.settings.enabled) return;
+      if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+        if (this.pausedAt > 0 && Date.now() - this.pausedAt > 4e3) {
+          return;
+        }
+      }
       const lastCue = this.activeCues[this.activeCues.length - 1];
       if (lastCue && lastCue.text.trim() === cue.text.trim()) {
         lastCue.receivedAt = cue.receivedAt;
@@ -269,17 +310,26 @@
         this.fadeTimer = null;
       }
       if (!this.isHovered) {
-        this.scheduleFadeOut();
+        if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+          this.fadeRemainingMs = this.settings.autoFadeTimeoutMs || 6e3;
+        } else {
+          this.scheduleFadeOut();
+        }
       }
     }
-    scheduleFadeOut() {
+    scheduleFadeOut(customMs) {
       if (this.fadeTimer) {
         clearTimeout(this.fadeTimer);
         this.fadeTimer = null;
       }
-      const duration = this.settings.autoFadeTimeoutMs || 6e3;
+      if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
+        return;
+      }
+      const duration = customMs || this.settings.autoFadeTimeoutMs || 6e3;
+      this.fadeTargetTime = Date.now() + duration;
+      this.fadeRemainingMs = duration;
       this.fadeTimer = setTimeout(() => {
-        if (!this.isHovered) {
+        if (!this.isHovered && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
           this.hide();
         }
       }, duration);
@@ -292,6 +342,7 @@
         clearTimeout(this.fadeTimer);
         this.fadeTimer = null;
       }
+      this.fadeRemainingMs = 0;
       setTimeout(() => {
         if (this.container && this.container.style.opacity === "0") {
           this.activeCues = [];
@@ -363,6 +414,9 @@
     }
     if (bestCandidate) {
       activeVideo = bestCandidate.video;
+      return activeVideo;
+    }
+    if (activeVideo && activeVideo.isConnected && isEligibleVideo(activeVideo)) {
       return activeVideo;
     }
     let largestVideo = null;

@@ -4,8 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const enabledToggle = document.getElementById('enabled-toggle') as HTMLInputElement;
   const statusDot = document.getElementById('status-dot') as HTMLSpanElement;
   const statusText = document.getElementById('status-text') as HTMLSpanElement;
-  const latestSub = document.getElementById('latest-sub') as HTMLDivElement;
+  const openHistoryBtn = document.getElementById('open-history-btn') as HTMLButtonElement;
 
+  const pauseWithVideoCheckbox = document.getElementById('pause-with-video') as HTMLInputElement;
   const fontSizeInput = document.getElementById('font-size') as HTMLInputElement;
   const fontSizeVal = document.getElementById('font-size-val') as HTMLSpanElement;
 
@@ -22,7 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const fadeTimeoutVal = document.getElementById('fade-timeout-val') as HTMLSpanElement;
 
   const serverUrlInput = document.getElementById('server-url') as HTMLInputElement;
-  const reconnectBtn = document.getElementById('reconnect-btn') as HTMLButtonElement;
+  const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
+  const retryBtn = document.getElementById('retry-btn') as HTMLButtonElement;
   const testSubBtn = document.getElementById('test-sub-btn') as HTMLButtonElement;
 
   function updateStatusUI(connected: boolean, enabled: boolean) {
@@ -38,10 +40,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function fetchCurrentStatus() {
+    chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (status) => {
+      if (chrome.runtime.lastError || !status) return;
+      updateStatusUI(status.connected, status.enabled);
+    });
+  }
+
   // Load initial settings and status
   chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (settings: ExtensionSettings) => {
     if (!settings) return;
     enabledToggle.checked = settings.enabled;
+    pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;
     fontSizeInput.value = String(settings.fontSize);
     fontSizeVal.textContent = `${settings.fontSize}px`;
 
@@ -63,14 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
     serverUrlInput.value = settings.serverUrl;
   });
 
-  chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (status) => {
-    if (status) {
-      updateStatusUI(status.connected, status.enabled);
-      if (status.lastCue?.text) {
-        latestSub.textContent = status.lastCue.text;
-      }
-    }
-  });
+  fetchCurrentStatus();
 
   // Settings update helper
   function saveSetting(patch: Partial<ExtensionSettings>) {
@@ -83,6 +86,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   enabledToggle.addEventListener('change', () => {
     saveSetting({ enabled: enabledToggle.checked });
+  });
+
+  pauseWithVideoCheckbox.addEventListener('change', () => {
+    saveSetting({ pauseSubtitlesWithVideo: pauseWithVideoCheckbox.checked });
   });
 
   fontSizeInput.addEventListener('input', () => {
@@ -117,19 +124,45 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSetting({ autoFadeTimeoutMs: Number(fadeTimeoutInput.value) * 1000 });
   });
 
-  reconnectBtn.addEventListener('click', () => {
+  // Connect button: saves the new URL and reconnects
+  connectBtn.addEventListener('click', () => {
     const url = serverUrlInput.value.trim();
+    statusText.textContent = 'Connecting...';
     saveSetting({ serverUrl: url });
     chrome.runtime.sendMessage({ type: 'RECONNECT' }, () => {
-      statusText.textContent = 'Connecting...';
+      setTimeout(fetchCurrentStatus, 400);
+      setTimeout(fetchCurrentStatus, 1200);
     });
   });
 
-  // Listen for live subtitle updates while popup is open
+  // Retry button: forces an immediate reconnection attempt
+  retryBtn.addEventListener('click', () => {
+    retryBtn.textContent = '...';
+    retryBtn.disabled = true;
+    statusText.textContent = 'Retrying connection...';
+
+    const url = serverUrlInput.value.trim();
+    saveSetting({ serverUrl: url });
+
+    chrome.runtime.sendMessage({ type: 'RECONNECT' }, () => {
+      setTimeout(() => {
+        retryBtn.textContent = 'Retry';
+        retryBtn.disabled = false;
+        fetchCurrentStatus();
+      }, 500);
+      setTimeout(fetchCurrentStatus, 1200);
+    });
+  });
+
+  // Open History page in a new tab
+  openHistoryBtn.addEventListener('click', () => {
+    const historyUrl = chrome.runtime.getURL('history.html');
+    chrome.tabs.create({ url: historyUrl });
+  });
+
+  // Listen for real-time server status pushes from background worker
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'NEW_SUBTITLE') {
-      latestSub.textContent = msg.cue.text;
-    } else if (msg.type === 'SERVER_STATUS') {
+    if (msg.type === 'SERVER_STATUS') {
       updateStatusUI(msg.connected, enabledToggle.checked);
     }
   });
@@ -141,17 +174,16 @@ document.addEventListener('DOMContentLoaded', () => {
       'Audio en tiempo real detectado con ScreenCaptureKit.',
       'Siguiente línea sincronizada con el reproductor de video.',
       'Live speech transcription running seamlessly!',
+      'When you pause the video, the subtitle pauses too!',
     ];
     const text = samplePhrases[Math.floor(Math.random() * samplePhrases.length)];
     const cue: SubtitleCue = {
       id: Math.random().toString(36).substring(2, 9),
       text,
-      timestamp: '00:00:01',
+      timestamp: new Date().toLocaleTimeString(),
       receivedAt: Date.now(),
       durationMs: Number(fadeTimeoutInput.value) * 1000,
     };
-
-    latestSub.textContent = text;
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {

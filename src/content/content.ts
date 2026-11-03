@@ -49,7 +49,12 @@ function getTargetVideo(): HTMLMediaElement | null {
     return activeVideo;
   }
 
-  // 3. Fallback to the largest visible eligible video
+  // 3. If activeVideo was recently playing and is still connected/eligible (even if paused), retain it!
+  if (activeVideo && activeVideo.isConnected && isEligibleVideo(activeVideo)) {
+    return activeVideo;
+  }
+
+  // 4. Fallback to the largest visible eligible video
   let largestVideo: HTMLMediaElement | null = null;
   let maxArea = 0;
 
