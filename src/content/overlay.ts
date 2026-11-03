@@ -375,45 +375,63 @@ export class VideoOverlay {
 
     if (this.settings.enableSubtitleCache) {
       // Deduplication & cache update:
-      // If this line was already registered or replayed, update both startTime and endTime with widest bounds!
+      // If this line was already registered or replayed, or is an in-progress extension:
       const existingIndex = this.timeline.findIndex(
-        (c) => c.text.trim().toLowerCase() === cleanTextLower && Math.abs(c.startTime - estimatedStart) < 8.0
+        (c) =>
+          c.id === cue.id ||
+          c.text.trim().toLowerCase() === cleanTextLower ||
+          cleanTextLower.startsWith(c.text.trim().toLowerCase()) ||
+          c.text.trim().toLowerCase().startsWith(cleanTextLower) ||
+          Math.abs(c.startTime - estimatedStart) < 3.0
       );
 
       if (existingIndex !== -1) {
         // Update both bounds: if a new calculation gives an earlier startTime, USE IT!
+        this.timeline[existingIndex].text = cue.text;
         this.timeline[existingIndex].startTime = Math.min(this.timeline[existingIndex].startTime, estimatedStart);
         this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
-        return;
-      }
-
-      // Check if previous cue in timeline ended very recently (< 1.2s ago).
-      // If gap is small, they are adjacent clauses in the same dialogue:
-      if (this.timeline.length > 0) {
-        const prev = this.timeline[this.timeline.length - 1];
-        if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
-          estimatedStart = prev.endTime + 0.05;
+        this.timeline[existingIndex].id = cue.id;
+      } else {
+        // Check if previous cue in timeline ended very recently (< 1.2s ago).
+        // If gap is small, they are adjacent clauses in the same dialogue:
+        if (this.timeline.length > 0) {
+          const prev = this.timeline[this.timeline.length - 1];
+          if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
+            estimatedStart = prev.endTime + 0.05;
+          }
         }
-      }
 
-      this.timeline.push({
-        id: cue.id,
-        text: cue.text,
-        startTime: estimatedStart,
-        endTime: estimatedEnd,
-        receivedAt: cue.receivedAt,
-      });
+        this.timeline.push({
+          id: cue.id,
+          text: cue.text,
+          startTime: estimatedStart,
+          endTime: estimatedEnd,
+          receivedAt: cue.receivedAt,
+        });
 
-      if (this.timeline.length > 100) {
-        this.timeline.shift();
+        if (this.timeline.length > 100) {
+          this.timeline.shift();
+        }
+        this.timeline.sort((a, b) => a.startTime - b.startTime);
       }
-      this.timeline.sort((a, b) => a.startTime - b.startTime);
     }
 
-    // Avoid duplicate cues with same text arriving consecutively
+    // In-progress streaming update:
+    // If the last active cue shares the same ID, or the new text extends/replaces it:
     const lastCue = this.activeCues[this.activeCues.length - 1];
-    if (lastCue && lastCue.text.trim() === cue.text.trim()) {
+    const isContinuation =
+      lastCue &&
+      (lastCue.id === cue.id ||
+        cleanText.startsWith(lastCue.text.trim()) ||
+        lastCue.text.trim().startsWith(cleanText));
+
+    if (isContinuation && lastCue) {
+      lastCue.text = cue.text;
       lastCue.receivedAt = cue.receivedAt;
+      lastCue.id = cue.id;
+      lastCue.durationMs = cue.durationMs;
+      this.renderStack();
+      this.container.style.setProperty('opacity', '1', 'important');
       return;
     }
 

@@ -5,6 +5,7 @@ export interface SubtitleCue {
   receivedAt: number;
   durationMs?: number;
   lagMs?: number;
+  isFinal?: boolean;
 }
 
 export interface SubtitleHistoryEntry {
@@ -12,6 +13,7 @@ export interface SubtitleHistoryEntry {
   text: string;
   timestamp?: string;
   receivedAt: number;
+  isFinal?: boolean;
 }
 
 export type HistoryRetentionDuration = '1h' | '6h' | '24h' | '7d' | '30d' | 'forever';

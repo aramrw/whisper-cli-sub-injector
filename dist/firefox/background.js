@@ -93,11 +93,30 @@
     return changed;
   }
   async function addCueToHistory(cue) {
+    const cleanNew = cue.text.trim();
+    if (!cleanNew) return;
+    const lastEntry = historyCache.length > 0 ? historyCache[historyCache.length - 1] : null;
+    const isContinuation = lastEntry && (lastEntry.id === cue.id || cleanNew.startsWith(lastEntry.text) || lastEntry.text.startsWith(cleanNew) || Date.now() - lastEntry.receivedAt < 4e3 && cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15));
+    if (isContinuation && lastEntry) {
+      lastEntry.text = cleanNew;
+      lastEntry.timestamp = cue.timestamp || lastEntry.timestamp;
+      lastEntry.receivedAt = cue.receivedAt;
+      lastEntry.id = cue.id;
+      lastEntry.isFinal = cue.isFinal;
+      await chrome.storage.local.set({ subtitleHistory: historyCache });
+      chrome.runtime.sendMessage({
+        type: "UPDATE_HISTORY_ENTRY",
+        entry: lastEntry
+      }).catch(() => {
+      });
+      return;
+    }
     const entry = {
       id: cue.id,
-      text: cue.text,
+      text: cleanNew,
       timestamp: cue.timestamp,
-      receivedAt: cue.receivedAt
+      receivedAt: cue.receivedAt,
+      isFinal: cue.isFinal
     };
     historyCache.push(entry);
     const retentionMs = getRetentionMs(historySettings.retentionDuration);
@@ -186,7 +205,8 @@
             timestamp: data.timestamp,
             receivedAt: Date.now(),
             durationMs: data.durationMs,
-            lagMs: data.lagMs
+            lagMs: data.lagMs,
+            isFinal: data.isFinal ?? true
           };
           if (cue.text.trim()) {
             lastCue = cue;

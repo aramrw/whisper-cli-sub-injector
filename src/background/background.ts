@@ -67,11 +67,43 @@ function pruneHistory(): boolean {
 }
 
 async function addCueToHistory(cue: SubtitleCue): Promise<void> {
+  const cleanNew = cue.text.trim();
+  if (!cleanNew) return;
+
+  const lastEntry = historyCache.length > 0 ? historyCache[historyCache.length - 1] : null;
+
+  // Check if this cue is an in-progress continuation or extension of the previous entry:
+  const isContinuation =
+    lastEntry &&
+    (lastEntry.id === cue.id ||
+      cleanNew.startsWith(lastEntry.text) ||
+      lastEntry.text.startsWith(cleanNew) ||
+      (Date.now() - lastEntry.receivedAt < 4000 &&
+        cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15)));
+
+  if (isContinuation && lastEntry) {
+    // Overwrite the existing entry with the latest complete/longer text!
+    lastEntry.text = cleanNew;
+    lastEntry.timestamp = cue.timestamp || lastEntry.timestamp;
+    lastEntry.receivedAt = cue.receivedAt;
+    lastEntry.id = cue.id;
+    lastEntry.isFinal = cue.isFinal;
+
+    await chrome.storage.local.set({ subtitleHistory: historyCache });
+
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_HISTORY_ENTRY',
+      entry: lastEntry,
+    }).catch(() => {});
+    return;
+  }
+
   const entry: SubtitleHistoryEntry = {
     id: cue.id,
-    text: cue.text,
+    text: cleanNew,
     timestamp: cue.timestamp,
     receivedAt: cue.receivedAt,
+    isFinal: cue.isFinal,
   };
 
   historyCache.push(entry);
@@ -183,6 +215,7 @@ function connectToEventSource() {
           receivedAt: Date.now(),
           durationMs: data.durationMs,
           lagMs: data.lagMs,
+          isFinal: data.isFinal ?? true,
         };
 
         if (cue.text.trim()) {

@@ -184,6 +184,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function updateLastEntry(entry: SubtitleHistoryEntry) {
+    if (allEntries.length === 0) {
+      appendSingleEntry(entry);
+      return;
+    }
+
+    const existingIdx = allEntries.findIndex((e) => e.id === entry.id);
+    const targetIdx = existingIdx !== -1 ? existingIdx : allEntries.length - 1;
+    allEntries[targetIdx] = entry;
+
+    const q = currentFilter.trim().toLowerCase();
+    const rows = subtitleList.querySelectorAll('.subtitle-row');
+    const targetRow = rows[targetIdx] as HTMLElement | undefined;
+
+    if (targetRow) {
+      const textWrapper = targetRow.querySelector('.cue-text-wrapper');
+      if (textWrapper) {
+        textWrapper.innerHTML = highlightMatches(entry.text, q);
+      }
+      const timeSpan = targetRow.querySelector('.cue-time') as HTMLElement | null;
+      if (timeSpan) {
+        timeSpan.textContent = formatTime(entry.receivedAt);
+      }
+    } else {
+      renderList();
+    }
+  }
+
   function scrollToBottom() {
     if (mainContent) {
       mainContent.scrollTop = mainContent.scrollHeight;
@@ -333,6 +361,8 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'NEW_HISTORY_ENTRY') {
       appendSingleEntry(msg.entry);
+    } else if (msg.type === 'UPDATE_HISTORY_ENTRY') {
+      updateLastEntry(msg.entry);
     } else if (msg.type === 'SERVER_STATUS') {
       updateStatus(msg.connected);
     } else if (msg.type === 'HISTORY_CLEARED') {

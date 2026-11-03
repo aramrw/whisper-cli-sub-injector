@@ -318,34 +318,42 @@
       }
       if (this.settings.enableSubtitleCache) {
         const existingIndex = this.timeline.findIndex(
-          (c) => c.text.trim().toLowerCase() === cleanTextLower && Math.abs(c.startTime - estimatedStart) < 8
+          (c) => c.id === cue.id || c.text.trim().toLowerCase() === cleanTextLower || cleanTextLower.startsWith(c.text.trim().toLowerCase()) || c.text.trim().toLowerCase().startsWith(cleanTextLower) || Math.abs(c.startTime - estimatedStart) < 3
         );
         if (existingIndex !== -1) {
+          this.timeline[existingIndex].text = cue.text;
           this.timeline[existingIndex].startTime = Math.min(this.timeline[existingIndex].startTime, estimatedStart);
           this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
-          return;
-        }
-        if (this.timeline.length > 0) {
-          const prev = this.timeline[this.timeline.length - 1];
-          if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
-            estimatedStart = prev.endTime + 0.05;
+          this.timeline[existingIndex].id = cue.id;
+        } else {
+          if (this.timeline.length > 0) {
+            const prev = this.timeline[this.timeline.length - 1];
+            if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
+              estimatedStart = prev.endTime + 0.05;
+            }
           }
+          this.timeline.push({
+            id: cue.id,
+            text: cue.text,
+            startTime: estimatedStart,
+            endTime: estimatedEnd,
+            receivedAt: cue.receivedAt
+          });
+          if (this.timeline.length > 100) {
+            this.timeline.shift();
+          }
+          this.timeline.sort((a, b) => a.startTime - b.startTime);
         }
-        this.timeline.push({
-          id: cue.id,
-          text: cue.text,
-          startTime: estimatedStart,
-          endTime: estimatedEnd,
-          receivedAt: cue.receivedAt
-        });
-        if (this.timeline.length > 100) {
-          this.timeline.shift();
-        }
-        this.timeline.sort((a, b) => a.startTime - b.startTime);
       }
       const lastCue = this.activeCues[this.activeCues.length - 1];
-      if (lastCue && lastCue.text.trim() === cue.text.trim()) {
+      const isContinuation = lastCue && (lastCue.id === cue.id || cleanText.startsWith(lastCue.text.trim()) || lastCue.text.trim().startsWith(cleanText));
+      if (isContinuation && lastCue) {
+        lastCue.text = cue.text;
         lastCue.receivedAt = cue.receivedAt;
+        lastCue.id = cue.id;
+        lastCue.durationMs = cue.durationMs;
+        this.renderStack();
+        this.container.style.setProperty("opacity", "1", "important");
         return;
       }
       if (!this.settings.stackMode || this.settings.maxLines <= 1) {
