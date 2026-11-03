@@ -1,6 +1,7 @@
 # whisper-cli-sub-injector
 
-Browser extension that displays live subtitles over HTML5 video elements, designed to work alongside [whisper-cli](https://github.com/aramrw/whisper-cli).
+Browser extension that displays live subtitles over HTML5 video elements.
+Companion app for [whisper-cli](https://github.com/aramrw/whisper-cli) (required).
 
 ![Subtitle Overlay](screenshots/overlay.png)
 
