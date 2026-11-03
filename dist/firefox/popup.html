@@ -96,6 +96,17 @@
       <label for="sub-nav-padding">Replay Padding: <span id="sub-nav-padding-val">150ms</span></label>
       <input type="range" id="sub-nav-padding" min="0" max="500" step="25" value="150">
     </div>
+
+    <div class="control-row row-flex">
+      <label for="sub-nav-cache">Cache Subtitle Timestamps:</label>
+      <input type="checkbox" id="sub-nav-cache" checked>
+    </div>
+
+    <div class="control-row" style="margin-top: 8px;">
+      <button id="clear-cache-btn" class="btn btn-secondary-btn" style="width: 100%; padding: 6px; font-size: 11px;">
+        🗑️ Clear Subtitle Cache
+      </button>
+    </div>
   </div>
 
   <div class="section server-section">

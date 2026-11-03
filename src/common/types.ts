@@ -63,6 +63,7 @@ export interface ExtensionSettings {
   subNavigationEnabled: boolean;
   subNavigationPlayOnSeek: boolean;
   subNavigationPaddingMs: number;
+  enableSubtitleCache: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -83,13 +84,15 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   subNavigationEnabled: true,
   subNavigationPlayOnSeek: true,
   subNavigationPaddingMs: 150,
+  enableSubtitleCache: true,
 };
 
 export type MessageToContent =
   | { type: 'NEW_SUBTITLE'; cue: SubtitleCue }
   | { type: 'SETTINGS_CHANGED'; settings: ExtensionSettings }
   | { type: 'SERVER_STATUS'; connected: boolean; url: string }
-  | { type: 'CLEAR_SUBTITLES' };
+  | { type: 'CLEAR_SUBTITLES' }
+  | { type: 'CLEAR_TIMELINE_CACHE' };
 
 export type MessageToBackground =
   | { type: 'GET_STATUS' }
@@ -100,7 +103,8 @@ export type MessageToBackground =
   | { type: 'GET_HISTORY' }
   | { type: 'GET_HISTORY_SETTINGS' }
   | { type: 'UPDATE_HISTORY_SETTINGS'; settings: Partial<HistorySettings> }
-  | { type: 'CLEAR_HISTORY' };
+  | { type: 'CLEAR_HISTORY' }
+  | { type: 'CLEAR_TIMELINE_CACHE' };
 
 export type BroadcastMessage =
   | MessageToContent

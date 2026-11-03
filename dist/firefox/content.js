@@ -18,7 +18,8 @@
     pauseSubtitlesWithVideo: true,
     subNavigationEnabled: true,
     subNavigationPlayOnSeek: true,
-    subNavigationPaddingMs: 150
+    subNavigationPaddingMs: 150,
+    enableSubtitleCache: true
   };
 
   // src/content/overlay.ts
@@ -291,6 +292,11 @@
       this.container.style.setProperty("transform", "translateX(-50%)", "important");
       this.container.style.setProperty("max-width", `${maxWidth}px`, "important");
     }
+    clearTimelineCache() {
+      this.timeline = [];
+      this.activeReplayCue = null;
+      console.log("[whisper-cli-sub-injector] Subtitle replay cache cleared.");
+    }
     showCue(cue) {
       if (!this.settings.enabled) return;
       if (this.video.paused && this.settings.pauseSubtitlesWithVideo) {
@@ -299,32 +305,44 @@
         }
       }
       const nowVideo = this.video.currentTime;
-      const durSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1e3 : 3;
+      const cleanText = cue.text.trim();
+      const cleanTextLower = cleanText.toLowerCase();
+      const textSec = Math.max(1.8, cleanText.length / 13);
+      const chunkSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1e3 : 0;
+      const durSec = Math.max(chunkSec, textSec);
       const lagSec = cue.lagMs !== void 0 && cue.lagMs >= 0 ? cue.lagMs / 1e3 : 0.75;
       const estimatedEnd = Math.max(0, nowVideo - lagSec);
-      const estimatedStart = Math.max(0, estimatedEnd - durSec);
+      let estimatedStart = Math.max(0, estimatedEnd - durSec);
       if (nowVideo < 2 && this.timeline.length > 0 && this.timeline[this.timeline.length - 1].startTime > 30) {
         this.timeline = [];
       }
-      const cleanText = cue.text.trim().toLowerCase();
-      const existingIndex = this.timeline.findIndex(
-        (c) => c.text.trim().toLowerCase() === cleanText && Math.abs(c.startTime - estimatedStart) < 8
-      );
-      if (existingIndex !== -1) {
-        this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
-        return;
+      if (this.settings.enableSubtitleCache) {
+        const existingIndex = this.timeline.findIndex(
+          (c) => c.text.trim().toLowerCase() === cleanTextLower && Math.abs(c.startTime - estimatedStart) < 8
+        );
+        if (existingIndex !== -1) {
+          this.timeline[existingIndex].startTime = Math.min(this.timeline[existingIndex].startTime, estimatedStart);
+          this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
+          return;
+        }
+        if (this.timeline.length > 0) {
+          const prev = this.timeline[this.timeline.length - 1];
+          if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
+            estimatedStart = prev.endTime + 0.05;
+          }
+        }
+        this.timeline.push({
+          id: cue.id,
+          text: cue.text,
+          startTime: estimatedStart,
+          endTime: estimatedEnd,
+          receivedAt: cue.receivedAt
+        });
+        if (this.timeline.length > 100) {
+          this.timeline.shift();
+        }
+        this.timeline.sort((a, b) => a.startTime - b.startTime);
       }
-      this.timeline.push({
-        id: cue.id,
-        text: cue.text,
-        startTime: estimatedStart,
-        endTime: estimatedEnd,
-        receivedAt: cue.receivedAt
-      });
-      if (this.timeline.length > 100) {
-        this.timeline.shift();
-      }
-      this.timeline.sort((a, b) => a.startTime - b.startTime);
       const lastCue = this.activeCues[this.activeCues.length - 1];
       if (lastCue && lastCue.text.trim() === cue.text.trim()) {
         lastCue.receivedAt = cue.receivedAt;
@@ -355,32 +373,71 @@
     }
     seekToPreviousSubtitle() {
       if (!this.settings.subNavigationEnabled) return false;
-      if (this.timeline.length === 0) return false;
       const vPos = this.video.currentTime;
       const padSec = (this.settings.subNavigationPaddingMs || 150) / 1e3;
+      if (!this.settings.enableSubtitleCache) {
+        const lastActive = this.activeCues[this.activeCues.length - 1];
+        if (lastActive) {
+          const textDur = Math.max(2.2, lastActive.text.trim().length / 13);
+          const seekTime2 = Math.max(0, vPos - textDur - padSec);
+          this.video.currentTime = seekTime2;
+          if (this.video.paused && this.settings.subNavigationPlayOnSeek) {
+            this.video.play().catch(() => {
+            });
+          }
+          return true;
+        }
+        return false;
+      }
+      if (this.timeline.length === 0) {
+        const lastActive = this.activeCues[this.activeCues.length - 1];
+        if (lastActive) {
+          const textDur = Math.max(2.2, lastActive.text.trim().length / 13);
+          const seekTime2 = Math.max(0, vPos - textDur - padSec);
+          this.video.currentTime = seekTime2;
+          if (this.video.paused && this.settings.subNavigationPlayOnSeek) {
+            this.video.play().catch(() => {
+            });
+          }
+          return true;
+        }
+        return false;
+      }
       let targetCue = null;
+      let targetIndex = -1;
       for (let i = this.timeline.length - 1; i >= 0; i--) {
         const c = this.timeline[i];
-        if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 2.5) {
+        if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 3) {
           const targetSeekPos = Math.max(0, c.startTime - padSec);
-          if (Math.abs(vPos - targetSeekPos) < 0.45 || vPos < targetSeekPos + 0.35 && vPos >= targetSeekPos - 0.25) {
+          if (Math.abs(vPos - targetSeekPos) < 0.5 || vPos < targetSeekPos + 0.4 && vPos >= targetSeekPos - 0.25) {
             if (i > 0) {
               targetCue = this.timeline[i - 1];
+              targetIndex = i - 1;
               break;
             }
           } else {
             targetCue = c;
+            targetIndex = i;
             break;
           }
         } else if (c.endTime < vPos) {
-          if (targetCue === null && vPos - c.endTime <= 10) {
+          if (targetCue === null && vPos - c.endTime <= 12) {
             targetCue = c;
+            targetIndex = i;
             break;
           }
         }
       }
       if (!targetCue) {
         return false;
+      }
+      if (targetIndex > 0) {
+        const prevCue = this.timeline[targetIndex - 1];
+        const gap = targetCue.startTime - prevCue.endTime;
+        const startsWithLower = /^[a-záéíóúñ]/.test(targetCue.text.trim());
+        if (gap < 1 || gap < 1.8 && startsWithLower) {
+          targetCue = prevCue;
+        }
       }
       const seekTime = Math.max(0, targetCue.startTime - padSec);
       this.activeReplayCue = targetCue;
@@ -610,6 +667,10 @@
     } else if (message.type === "CLEAR_SUBTITLES") {
       for (const binding of bindings.values()) {
         binding.overlay.hide();
+      }
+    } else if (message.type === "CLEAR_TIMELINE_CACHE") {
+      for (const binding of bindings.values()) {
+        binding.overlay.clearTimelineCache();
       }
     }
   });

@@ -26,6 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const subNavPlayCheckbox = document.getElementById('sub-nav-play') as HTMLInputElement;
   const subNavPaddingInput = document.getElementById('sub-nav-padding') as HTMLInputElement;
   const subNavPaddingVal = document.getElementById('sub-nav-padding-val') as HTMLSpanElement;
+  const subNavCacheCheckbox = document.getElementById('sub-nav-cache') as HTMLInputElement;
+  const clearCacheBtn = document.getElementById('clear-cache-btn') as HTMLButtonElement;
 
   const serverUrlInput = document.getElementById('server-url') as HTMLInputElement;
   const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
@@ -77,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     subNavEnabledCheckbox.checked = settings.subNavigationEnabled ?? true;
     subNavPlayCheckbox.checked = settings.subNavigationPlayOnSeek ?? true;
+    subNavCacheCheckbox.checked = settings.enableSubtitleCache ?? true;
     const padMs = settings.subNavigationPaddingMs ?? 150;
     subNavPaddingInput.value = String(padMs);
     subNavPaddingVal.textContent = `${padMs}ms`;
@@ -146,6 +149,22 @@ document.addEventListener('DOMContentLoaded', () => {
   subNavPaddingInput.addEventListener('input', () => {
     subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
     saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
+  });
+
+  subNavCacheCheckbox.addEventListener('change', () => {
+    saveSetting({ enableSubtitleCache: subNavCacheCheckbox.checked });
+  });
+
+  clearCacheBtn.addEventListener('click', () => {
+    clearCacheBtn.disabled = true;
+    clearCacheBtn.textContent = 'Clearing...';
+    chrome.runtime.sendMessage({ type: 'CLEAR_TIMELINE_CACHE' }, () => {
+      clearCacheBtn.textContent = '✓ Cache Cleared!';
+      setTimeout(() => {
+        clearCacheBtn.textContent = '🗑️ Clear Subtitle Cache';
+        clearCacheBtn.disabled = false;
+      }, 1400);
+    });
   });
 
   // Connect button: saves the new URL and reconnects

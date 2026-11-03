@@ -331,6 +331,12 @@ export class VideoOverlay {
     this.container.style.setProperty('max-width', `${maxWidth}px`, 'important');
   }
 
+  clearTimelineCache() {
+    this.timeline = [];
+    this.activeReplayCue = null;
+    console.log('[whisper-cli-sub-injector] Subtitle replay cache cleared.');
+  }
+
   showCue(cue: SubtitleCue) {
     if (!this.settings.enabled) return;
 
@@ -344,44 +350,65 @@ export class VideoOverlay {
 
     // Register timing in the video timeline for smart replay navigation
     const nowVideo = this.video.currentTime;
-    const durSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1000 : 3.0;
+    const cleanText = cue.text.trim();
+    const cleanTextLower = cleanText.toLowerCase();
+
+    // Human conversational speech rate is typically ~13-14 chars/sec (or ~2.5 to 3 words/sec).
+    // If Whisper chunked the audio (e.g. at 2.5s) or split at a micro-pause, the reported chunk
+    // duration can be far shorter than the full spoken sentence, which would cause seeks to land
+    // in the middle of the sentence!
+    // We enforce that duration is at least the physical time needed to speak the text:
+    const textSec = Math.max(1.8, cleanText.length / 13.0);
+    const chunkSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1000 : 0;
+    const durSec = Math.max(chunkSec, textSec);
+
+    // Latency from Whisper:
     const lagSec = cue.lagMs !== undefined && cue.lagMs >= 0 ? cue.lagMs / 1000 : 0.75;
 
     const estimatedEnd = Math.max(0, nowVideo - lagSec);
-    const estimatedStart = Math.max(0, estimatedEnd - durSec);
+    let estimatedStart = Math.max(0, estimatedEnd - durSec);
 
     // If new episode started (video currentTime jumped back close to 0 while we have old cues from deep in video):
     if (nowVideo < 2.0 && this.timeline.length > 0 && this.timeline[this.timeline.length - 1].startTime > 30) {
       this.timeline = [];
     }
 
-    // Deduplication check:
-    // When the user replays dialogue with Left Arrow, Whisper will hear the audio a second time.
-    // Detect replayed lines matching recent cues in our timeline within ±8s of video time
-    const cleanText = cue.text.trim().toLowerCase();
-    const existingIndex = this.timeline.findIndex(
-      (c) => c.text.trim().toLowerCase() === cleanText && Math.abs(c.startTime - estimatedStart) < 8.0
-    );
+    if (this.settings.enableSubtitleCache) {
+      // Deduplication & cache update:
+      // If this line was already registered or replayed, update both startTime and endTime with widest bounds!
+      const existingIndex = this.timeline.findIndex(
+        (c) => c.text.trim().toLowerCase() === cleanTextLower && Math.abs(c.startTime - estimatedStart) < 8.0
+      );
 
-    if (existingIndex !== -1) {
-      // Replay echo! Update existing cue's bounds without creating duplicates or glitching
-      this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
-      return;
+      if (existingIndex !== -1) {
+        // Update both bounds: if a new calculation gives an earlier startTime, USE IT!
+        this.timeline[existingIndex].startTime = Math.min(this.timeline[existingIndex].startTime, estimatedStart);
+        this.timeline[existingIndex].endTime = Math.max(this.timeline[existingIndex].endTime, estimatedEnd);
+        return;
+      }
+
+      // Check if previous cue in timeline ended very recently (< 1.2s ago).
+      // If gap is small, they are adjacent clauses in the same dialogue:
+      if (this.timeline.length > 0) {
+        const prev = this.timeline[this.timeline.length - 1];
+        if (estimatedStart > prev.endTime && estimatedStart - prev.endTime < 1.2) {
+          estimatedStart = prev.endTime + 0.05;
+        }
+      }
+
+      this.timeline.push({
+        id: cue.id,
+        text: cue.text,
+        startTime: estimatedStart,
+        endTime: estimatedEnd,
+        receivedAt: cue.receivedAt,
+      });
+
+      if (this.timeline.length > 100) {
+        this.timeline.shift();
+      }
+      this.timeline.sort((a, b) => a.startTime - b.startTime);
     }
-
-    // Add to timeline
-    this.timeline.push({
-      id: cue.id,
-      text: cue.text,
-      startTime: estimatedStart,
-      endTime: estimatedEnd,
-      receivedAt: cue.receivedAt,
-    });
-
-    if (this.timeline.length > 100) {
-      this.timeline.shift();
-    }
-    this.timeline.sort((a, b) => a.startTime - b.startTime);
 
     // Avoid duplicate cues with same text arriving consecutively
     const lastCue = this.activeCues[this.activeCues.length - 1];
@@ -422,35 +449,68 @@ export class VideoOverlay {
 
   seekToPreviousSubtitle(): boolean {
     if (!this.settings.subNavigationEnabled) return false;
-    if (this.timeline.length === 0) return false;
 
     const vPos = this.video.currentTime;
     const padSec = (this.settings.subNavigationPaddingMs || 150) / 1000;
 
+    // IF CACHING IS DISABLED:
+    // Estimate directly from the currently/most recently displayed cue
+    if (!this.settings.enableSubtitleCache) {
+      const lastActive = this.activeCues[this.activeCues.length - 1];
+      if (lastActive) {
+        const textDur = Math.max(2.2, lastActive.text.trim().length / 13.0);
+        const seekTime = Math.max(0, vPos - textDur - padSec);
+        this.video.currentTime = seekTime;
+        if (this.video.paused && this.settings.subNavigationPlayOnSeek) {
+          this.video.play().catch(() => {});
+        }
+        return true;
+      }
+      return false; // Let native video player rewind 5s/10s
+    }
+
+    if (this.timeline.length === 0) {
+      const lastActive = this.activeCues[this.activeCues.length - 1];
+      if (lastActive) {
+        const textDur = Math.max(2.2, lastActive.text.trim().length / 13.0);
+        const seekTime = Math.max(0, vPos - textDur - padSec);
+        this.video.currentTime = seekTime;
+        if (this.video.paused && this.settings.subNavigationPlayOnSeek) {
+          this.video.play().catch(() => {});
+        }
+        return true;
+      }
+      return false;
+    }
+
     let targetCue: TimelineCue | null = null;
+    let targetIndex = -1;
 
     // Scan backwards from latest to earliest in timeline
     for (let i = this.timeline.length - 1; i >= 0; i--) {
       const c = this.timeline[i];
-      // Is vPos inside this cue or just finished (up to 2.5s after endTime)?
-      if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 2.5) {
+      // Is vPos inside this cue or just finished (up to 3.0s after endTime)?
+      if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 3.0) {
         const targetSeekPos = Math.max(0, c.startTime - padSec);
-        // Did we already jump to the start of this cue? (or within 0.45s of it)
-        if (Math.abs(vPos - targetSeekPos) < 0.45 || (vPos < targetSeekPos + 0.35 && vPos >= targetSeekPos - 0.25)) {
+        // Did we already jump to the start of this cue? (or within 0.5s of it)
+        if (Math.abs(vPos - targetSeekPos) < 0.5 || (vPos < targetSeekPos + 0.4 && vPos >= targetSeekPos - 0.25)) {
           // User wants to jump to the cue before this one!
           if (i > 0) {
             targetCue = this.timeline[i - 1];
+            targetIndex = i - 1;
             break;
           }
         } else {
           // Replay this cue from the start!
           targetCue = c;
+          targetIndex = i;
           break;
         }
       } else if (c.endTime < vPos) {
-        // Cue ended prior to vPos. If within 10s of quiet / silence, seek back to it!
-        if (targetCue === null && (vPos - c.endTime) <= 10.0) {
+        // Cue ended prior to vPos. If within 12s of quiet / silence, seek back to it!
+        if (targetCue === null && (vPos - c.endTime) <= 12.0) {
           targetCue = c;
+          targetIndex = i;
           break;
         }
       }
@@ -458,6 +518,19 @@ export class VideoOverlay {
 
     if (!targetCue) {
       return false;
+    }
+
+    // Sentence clause chaining:
+    // If targetCue is immediately preceded by an adjacent cue (< 1.2s pause)
+    // and targetCue is a continuation (starts with lowercase or conjunction like 'pero', 'y', 'que'),
+    // jump to the start of the entire sentence!
+    if (targetIndex > 0) {
+      const prevCue = this.timeline[targetIndex - 1];
+      const gap = targetCue.startTime - prevCue.endTime;
+      const startsWithLower = /^[a-záéíóúñ]/.test(targetCue.text.trim());
+      if (gap < 1.0 || (gap < 1.8 && startsWithLower)) {
+        targetCue = prevCue;
+      }
     }
 
     const seekTime = Math.max(0, targetCue.startTime - padSec);

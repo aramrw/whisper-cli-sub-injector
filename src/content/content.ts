@@ -136,6 +136,10 @@ chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, _sendR
     for (const binding of bindings.values()) {
       binding.overlay.hide();
     }
+  } else if (message.type === 'CLEAR_TIMELINE_CACHE') {
+    for (const binding of bindings.values()) {
+      binding.overlay.clearTimelineCache();
+    }
   }
 });
 

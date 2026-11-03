@@ -22,6 +22,8 @@
     const subNavPlayCheckbox = document.getElementById("sub-nav-play");
     const subNavPaddingInput = document.getElementById("sub-nav-padding");
     const subNavPaddingVal = document.getElementById("sub-nav-padding-val");
+    const subNavCacheCheckbox = document.getElementById("sub-nav-cache");
+    const clearCacheBtn = document.getElementById("clear-cache-btn");
     const serverUrlInput = document.getElementById("server-url");
     const connectBtn = document.getElementById("connect-btn");
     const retryBtn = document.getElementById("retry-btn");
@@ -63,6 +65,7 @@
       fadeTimeoutVal.textContent = `${fadeSecs}s`;
       subNavEnabledCheckbox.checked = settings.subNavigationEnabled ?? true;
       subNavPlayCheckbox.checked = settings.subNavigationPlayOnSeek ?? true;
+      subNavCacheCheckbox.checked = settings.enableSubtitleCache ?? true;
       const padMs = settings.subNavigationPaddingMs ?? 150;
       subNavPaddingInput.value = String(padMs);
       subNavPaddingVal.textContent = `${padMs}ms`;
@@ -116,6 +119,20 @@
     subNavPaddingInput.addEventListener("input", () => {
       subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
       saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
+    });
+    subNavCacheCheckbox.addEventListener("change", () => {
+      saveSetting({ enableSubtitleCache: subNavCacheCheckbox.checked });
+    });
+    clearCacheBtn.addEventListener("click", () => {
+      clearCacheBtn.disabled = true;
+      clearCacheBtn.textContent = "Clearing...";
+      chrome.runtime.sendMessage({ type: "CLEAR_TIMELINE_CACHE" }, () => {
+        clearCacheBtn.textContent = "\u2713 Cache Cleared!";
+        setTimeout(() => {
+          clearCacheBtn.textContent = "\u{1F5D1}\uFE0F Clear Subtitle Cache";
+          clearCacheBtn.disabled = false;
+        }, 1400);
+      });
     });
     connectBtn.addEventListener("click", () => {
       const url = serverUrlInput.value.trim();

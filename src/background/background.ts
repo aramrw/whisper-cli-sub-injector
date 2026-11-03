@@ -292,6 +292,12 @@ chrome.runtime.onMessage.addListener((message: MessageToBackground, _sender, sen
     });
     return true;
   }
+
+  if (message.type === 'CLEAR_TIMELINE_CACHE') {
+    broadcastToTabs({ type: 'CLEAR_TIMELINE_CACHE' });
+    sendResponse({ success: true });
+    return true;
+  }
 });
 
 // Periodic pruning of old history (every 5 minutes)

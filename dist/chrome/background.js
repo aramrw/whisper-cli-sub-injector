@@ -40,7 +40,8 @@
     pauseSubtitlesWithVideo: true,
     subNavigationEnabled: true,
     subNavigationPlayOnSeek: true,
-    subNavigationPaddingMs: 150
+    subNavigationPaddingMs: 150,
+    enableSubtitleCache: true
   };
 
   // src/background/background.ts
@@ -279,6 +280,11 @@
         });
         sendResponse({ success: true });
       });
+      return true;
+    }
+    if (message.type === "CLEAR_TIMELINE_CACHE") {
+      broadcastToTabs({ type: "CLEAR_TIMELINE_CACHE" });
+      sendResponse({ success: true });
       return true;
     }
   });
