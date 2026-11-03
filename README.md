@@ -20,13 +20,13 @@ Browser extension that displays live subtitles over HTML5 video elements, design
 
 ## How to Use
 
-1. Run `whisper-cli` with live system audio capture:
+1. Download & Run [whisper-cli](https://github.com/aramrw/whisper-cli) with live system audio capture:
 
 ```bash
 whisper --live --preset live -l ja
 ```
 
-`whisper-cli` starts a local SSE server at `http://127.0.0.1:8989/events`.
+[whisper-cli](https://github.com/aramrw/whisper-cli) starts a local SSE server at `http://127.0.0.1:8989/events`.
 
 2. The extension connects to the local endpoint automatically and overlays live transcription on the video currently playing in your browser.
 
