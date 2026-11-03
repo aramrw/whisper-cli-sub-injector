@@ -1,0 +1,25 @@
+{
+  "name": "whisper-cli-sub-injector",
+  "version": "1.0.0",
+  "description": "Live browser subtitle injector for HTML5 videos connected to whisper-cli.",
+  "scripts": {
+    "build": "node build.js",
+    "build:chrome": "node build.js chrome",
+    "build:firefox": "node build.js firefox",
+    "watch": "NODE_ENV=development node build.js"
+  },
+  "keywords": [
+    "whisper",
+    "subtitles",
+    "browser-extension",
+    "asbplayer",
+    "video-injector"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/chrome": "^0.0.308",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper Subtitles</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="title-row">
+      <div class="logo">
+        <span class="icon">🎧</span>
+        <span class="title">Whisper Live Subs</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enabled-toggle" checked>
+        <span class="slider round"></span>
+      </label>
+    </div>
+    <div class="status-badge" id="status-badge">
+      <span class="status-dot disconnected" id="status-dot"></span>
+      <span class="status-text" id="status-text">Connecting...</span>
+    </div>
+  </div>
+
+  <div class="section preview-section">
+    <div class="section-label">Latest Live Subtitle:</div>
+    <div class="preview-box" id="latest-sub">Waiting for speech from whisper-cli...</div>
+  </div>
+
+  <div class="section settings-section">
+    <div class="control-row">
+      <label for="font-size">Font Size: <span id="font-size-val">28px</span></label>
+      <input type="range" id="font-size" min="16" max="52" value="28">
+    </div>
+
+    <div class="control-row">
+      <label for="bottom-offset">Bottom Distance: <span id="bottom-offset-val">60px</span></label>
+      <input type="range" id="bottom-offset" min="10" max="180" value="60">
+    </div>
+
+    <div class="control-row row-flex">
+      <label for="alignment">Vertical Position:</label>
+      <select id="alignment" class="styled-select">
+        <option value="bottom">Bottom of Video</option>
+        <option value="top">Top of Video</option>
+      </select>
+    </div>
+
+    <div class="control-row row-flex">
+      <label for="bg-box">Background Box:</label>
+      <input type="checkbox" id="bg-box" checked>
+    </div>
+
+    <div class="control-row row-flex">
+      <label for="stack-mode">Rolling Stack (Fade Older Lines):</label>
+      <input type="checkbox" id="stack-mode" checked>
+    </div>
+
+    <div class="control-row" id="max-lines-row">
+      <label for="max-lines">Max Stack Lines: <span id="max-lines-val">3</span></label>
+      <input type="range" id="max-lines" min="1" max="5" value="3">
+    </div>
+
+    <div class="control-row">
+      <label for="fade-timeout">Fade-out Delay: <span id="fade-timeout-val">5s</span></label>
+      <input type="range" id="fade-timeout" min="2" max="15" value="5">
+    </div>
+  </div>
+
+  <div class="section server-section">
+    <div class="section-label">Server Endpoint:</div>
+    <div class="server-input-row">
+      <input type="text" id="server-url" value="http://127.0.0.1:8989" placeholder="http://127.0.0.1:8989">
+      <button id="reconnect-btn" class="btn">Connect</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <button id="test-sub-btn" class="btn btn-secondary">Send Test Subtitle</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
