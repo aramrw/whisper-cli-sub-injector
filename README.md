@@ -7,17 +7,25 @@ Companion app for [whisper-cli](https://github.com/aramrw/whisper-cli) (required
 
 ## Features
 
-- Automatically detects and binds to videos (works on YouTube, Crunchyroll, Netflix, and other video sites).
-- Automatically pauses subtitles when the video is paused, keeping text visible for reading or dictionary lookups.
-- Customizable appearance (font size, position, background box, fade-out time, and rolling stack lines).
-- Dedicated history page to search, filter, copy, and export previous subtitles (.txt, .srt, .json) with configurable retention.
-- Supports fullscreen mode without losing the overlay.
+- Detects and binds to videos (works on YouTube, Crunchyroll, Netflix, and other video sites).
+- Pauses subtitles when the video is paused. Useful for yomitan.
+- Customizable
+- Dedicated history page
+- Supports fullscreen mode
 
+### Popup
 <p align="center">
-  <img src="screenshots/popup.png" width="45%" alt="Extension Popup" />
+  <img src="screenshots/popup.png" width="35%" alt="Extension Popup" />
   &nbsp;
-  <img src="screenshots/history.png" width="50%" alt="History Page" />
 </p>
+
+### History
+<p align="center">
+ <img src="screenshots/history.png" width="90%" alt="History Page" />
+</p>
+ 
+
+ ---
 
 ## How to Use
 
