@@ -6,6 +6,9 @@
     const statusDot = document.getElementById("status-dot");
     const statusText = document.getElementById("status-text");
     const openHistoryBtn = document.getElementById("open-history-btn");
+    const autoEmbedToggle = document.getElementById("auto-embed-toggle");
+    const refreshVideosBtn = document.getElementById("refresh-videos-btn");
+    const videoListContainer = document.getElementById("video-list-container");
     const pauseWithVideoCheckbox = document.getElementById("pause-with-video");
     const fontSizeInput = document.getElementById("font-size");
     const fontSizeVal = document.getElementById("font-size-val");
@@ -46,9 +49,137 @@
         updateStatusUI(status.connected, status.enabled);
       });
     }
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+    function formatDuration(sec) {
+      if (isNaN(sec) || sec <= 0) return "0:00";
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m}:${s < 10 ? "0" : ""}${s}`;
+    }
+    function renderVideoList(videos, autoEmbed, _selectedVideoId) {
+      if (!videoListContainer) return;
+      videoListContainer.innerHTML = "";
+      if (!videos || videos.length === 0) {
+        videoListContainer.innerHTML = `
+        <div class="video-empty-state">
+          <span class="empty-icon">\u{1F3AC}</span>
+          <span class="empty-text">No video elements found on this tab.</span>
+        </div>
+      `;
+        return;
+      }
+      for (const vid of videos) {
+        const card = document.createElement("div");
+        const isTargeted = vid.isSelected;
+        card.className = `video-card ${isTargeted ? "active-target" : ""}`;
+        card.dataset.videoId = vid.id;
+        const statusIcon = vid.paused ? "\u23F8" : "\u25B6";
+        const statusTitle = vid.paused ? "Paused" : "Playing";
+        const durStr = vid.duration > 0 ? `${formatDuration(vid.currentTime)} / ${formatDuration(vid.duration)}` : formatDuration(vid.currentTime);
+        const resStr = vid.width && vid.height ? `${vid.width}\xD7${vid.height}` : "Video";
+        let badgeHtml = "";
+        if (isTargeted) {
+          if (autoEmbed) {
+            badgeHtml = `<span class="video-badge badge-auto">Auto-Targeted</span>`;
+          } else {
+            badgeHtml = `<span class="video-badge badge-manual">Selected</span>`;
+          }
+        }
+        card.innerHTML = `
+        <div class="video-card-top">
+          <span class="video-play-status ${vid.paused ? "paused" : "playing"}" title="${statusTitle}">
+            ${statusIcon}
+          </span>
+          <span class="video-title" title="${escapeHtml(vid.title)}">
+            ${escapeHtml(vid.title)}
+          </span>
+          ${badgeHtml}
+        </div>
+        <div class="video-card-meta">
+          <span class="meta-item">${resStr}</span>
+          <span class="meta-sep">\u2022</span>
+          <span class="meta-item">${durStr}</span>
+          ${!isTargeted ? '<span class="select-hint">Click to target</span>' : ""}
+        </div>
+      `;
+        card.addEventListener("click", () => {
+          autoEmbedToggle.checked = false;
+          saveSetting({ autoEmbed: false });
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]?.id) {
+              chrome.tabs.sendMessage(
+                tabs[0].id,
+                { type: "SELECT_VIDEO", videoId: vid.id },
+                () => {
+                  fetchDetectedVideos();
+                }
+              );
+            }
+          });
+        });
+        card.addEventListener("mouseenter", () => {
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]?.id) {
+              chrome.tabs.sendMessage(tabs[0].id, {
+                type: "HIGHLIGHT_VIDEO",
+                videoId: vid.id
+              }).catch(() => {
+              });
+            }
+          });
+        });
+        card.addEventListener("mouseleave", () => {
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]?.id) {
+              chrome.tabs.sendMessage(tabs[0].id, { type: "UNHIGHLIGHT_VIDEO" }).catch(() => {
+              });
+            }
+          });
+        });
+        videoListContainer.appendChild(card);
+      }
+    }
+    function fetchDetectedVideos() {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeTab = tabs[0];
+        if (!activeTab?.id) {
+          if (videoListContainer) {
+            videoListContainer.innerHTML = `
+            <div class="video-empty-state">
+              <span class="empty-icon">\u26A0\uFE0F</span>
+              <span class="empty-text">No active tab found.</span>
+            </div>
+          `;
+          }
+          return;
+        }
+        chrome.tabs.sendMessage(activeTab.id, { type: "GET_DETECTED_VIDEOS" }, (res) => {
+          if (chrome.runtime.lastError || !res) {
+            if (videoListContainer) {
+              videoListContainer.innerHTML = `
+              <div class="video-empty-state">
+                <span class="empty-icon">\u{1F50D}</span>
+                <span class="empty-text">No HTML5 video elements detected.</span>
+              </div>
+            `;
+            }
+            return;
+          }
+          if (res.autoEmbed !== void 0) {
+            autoEmbedToggle.checked = res.autoEmbed;
+          }
+          renderVideoList(res.videos, res.autoEmbed, res.selectedVideoId);
+        });
+      });
+    }
     chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (settings) => {
       if (!settings) return;
       enabledToggle.checked = settings.enabled;
+      autoEmbedToggle.checked = settings.autoEmbed ?? true;
       pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;
       fontSizeInput.value = String(settings.fontSize);
       fontSizeVal.textContent = `${settings.fontSize}px`;
@@ -72,6 +203,7 @@
       serverUrlInput.value = settings.serverUrl;
     });
     fetchCurrentStatus();
+    fetchDetectedVideos();
     function saveSetting(patch) {
       chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: patch }, (res) => {
         if (res?.settings) {
@@ -79,6 +211,31 @@
         }
       });
     }
+    autoEmbedToggle.addEventListener("change", () => {
+      const isAuto = autoEmbedToggle.checked;
+      saveSetting({ autoEmbed: isAuto });
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(
+            tabs[0].id,
+            { type: "SET_AUTO_EMBED", autoEmbed: isAuto },
+            () => {
+              fetchDetectedVideos();
+            }
+          );
+        }
+      });
+    });
+    refreshVideosBtn.addEventListener("click", () => {
+      const icon = refreshVideosBtn.querySelector(".refresh-icon");
+      if (icon) {
+        icon.style.transform = "rotate(180deg)";
+        setTimeout(() => {
+          icon.style.transform = "";
+        }, 350);
+      }
+      fetchDetectedVideos();
+    });
     enabledToggle.addEventListener("change", () => {
       saveSetting({ enabled: enabledToggle.checked });
     });
@@ -186,6 +343,16 @@
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]?.id) {
           chrome.tabs.sendMessage(tabs[0].id, { type: "NEW_SUBTITLE", cue });
+        }
+      });
+    });
+    const pollInterval = setInterval(fetchDetectedVideos, 2500);
+    window.addEventListener("unload", () => {
+      clearInterval(pollInterval);
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: "UNHIGHLIGHT_VIDEO" }).catch(() => {
+          });
         }
       });
     });

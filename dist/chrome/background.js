@@ -41,7 +41,8 @@
     subNavigationEnabled: true,
     subNavigationPlayOnSeek: true,
     subNavigationPaddingMs: 150,
-    enableSubtitleCache: true
+    enableSubtitleCache: true,
+    autoEmbed: true
   };
 
   // src/background/background.ts
@@ -273,6 +274,17 @@
       sendResponse({ pong: true, connected: isConnected });
       return true;
     }
+    if (message.type === "TAB_FOCUSED") {
+      if (currentSettings.enabled && !isConnected) {
+        connectToEventSource();
+      }
+      sendResponse({
+        connected: isConnected,
+        lastCue,
+        settings: currentSettings
+      });
+      return true;
+    }
     if (message.type === "GET_HISTORY") {
       pruneHistory();
       sendResponse({
@@ -311,6 +323,45 @@
   setInterval(() => {
     pruneHistory();
   }, 5 * 60 * 1e3);
+  chrome.runtime.onConnect.addListener((port) => {
+    if (port.name === "whisper-keepalive") {
+      if (currentSettings.enabled && !isConnected) {
+        console.log("[whisper-cli-sub-injector] Port connected; ensuring SSE connection");
+        connectToEventSource();
+      }
+    }
+  });
+  if (chrome.tabs?.onActivated) {
+    chrome.tabs.onActivated.addListener(async (activeInfo) => {
+      if (currentSettings.enabled && !isConnected) {
+        console.log("[whisper-cli-sub-injector] Tab switched; auto-reconnecting SSE");
+        connectToEventSource();
+      }
+      try {
+        chrome.tabs.sendMessage(activeInfo.tabId, {
+          type: "TAB_ACTIVATED",
+          settings: currentSettings,
+          lastCue,
+          connected: isConnected
+        }).catch(() => {
+        });
+      } catch {
+      }
+    });
+  }
+  try {
+    chrome.alarms.create("whisper-watchdog", { periodInMinutes: 0.5 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === "whisper-watchdog") {
+        if (currentSettings.enabled && !isConnected) {
+          console.log("[whisper-cli-sub-injector] Watchdog alarm reconnecting SSE");
+          connectToEventSource();
+        }
+      }
+    });
+  } catch (e) {
+    console.warn("[whisper-cli-sub-injector] chrome.alarms not initialized:", e);
+  }
   Promise.all([loadSettings(), loadHistory()]).then(() => {
     updateBadge();
     connectToEventSource();

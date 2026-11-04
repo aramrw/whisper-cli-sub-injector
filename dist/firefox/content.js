@@ -19,7 +19,8 @@
     subNavigationEnabled: true,
     subNavigationPlayOnSeek: true,
     subNavigationPaddingMs: 150,
-    enableSubtitleCache: true
+    enableSubtitleCache: true,
+    autoEmbed: true
   };
 
   // src/content/overlay.ts
@@ -74,7 +75,7 @@
       this.container.style.setProperty("pointer-events", "none", "important");
       this.container.style.setProperty("position", "absolute", "important");
       this.container.style.setProperty("z-index", "2147483647", "important");
-      this.container.style.setProperty("transition", "opacity 0.25s ease, transform 0.2s ease", "important");
+      this.container.style.setProperty("transition", "opacity 0.25s ease", "important");
       this.container.style.setProperty("opacity", "0", "important");
       this.stackContainer = document.createElement("div");
       this.stackContainer.className = "whisper-cli-sub-stack";
@@ -258,6 +259,9 @@
     }
     updatePosition() {
       if (!this.container || !this.video) return;
+      if (!this.container.isConnected) {
+        this.attach();
+      }
       const rect = this.video.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) {
         this.container.style.display = "none";
@@ -287,15 +291,34 @@
         }
       }
       const maxWidth = Math.max(200, Math.min(rect.width * 0.9, window.innerWidth * 0.92));
+      const isTop = this.settings.alignment === "top";
+      const transformVal = isTop ? "translateX(-50%)" : "translate(-50%, -100%)";
       this.container.style.setProperty("left", `${centerX}px`, "important");
       this.container.style.setProperty("top", `${targetY}px`, "important");
-      this.container.style.setProperty("transform", "translateX(-50%)", "important");
+      this.container.style.setProperty("transform", transformVal, "important");
       this.container.style.setProperty("max-width", `${maxWidth}px`, "important");
     }
     clearTimelineCache() {
       this.timeline = [];
       this.activeReplayCue = null;
       console.log("[whisper-cli-sub-injector] Subtitle replay cache cleared.");
+    }
+    restoreIfIdle(cue) {
+      if (!this.settings.enabled) return;
+      const isVisible = this.container && this.container.style.opacity === "1";
+      if (this.activeCues.length === 0 || !isVisible) {
+        const isFresh = Date.now() - cue.receivedAt < 45e3;
+        if (isFresh || this.video.paused) {
+          this.showCue(cue);
+        }
+      }
+    }
+    refreshPausedSubtitle() {
+      if (!this.settings.enabled) return;
+      if (this.activeCues.length > 0 && this.container) {
+        this.updatePosition();
+        this.container.style.setProperty("opacity", "1", "important");
+      }
     }
     showCue(cue) {
       if (!this.settings.enabled) return;
@@ -579,6 +602,11 @@
   var settings = { ...DEFAULT_SETTINGS };
   var bindings = /* @__PURE__ */ new Map();
   var activeVideo = null;
+  var selectedVideoId = null;
+  var keepAlivePort = null;
+  var highlightedVideo = null;
+  var originalOutline = "";
+  var originalBoxShadow = "";
   function initSettings() {
     chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
       settings = { ...DEFAULT_SETTINGS, ...items };
@@ -587,7 +615,59 @@
       }
     });
   }
+  function ensureKeepAlive() {
+    if (keepAlivePort) return;
+    try {
+      keepAlivePort = chrome.runtime.connect({ name: "whisper-keepalive" });
+      keepAlivePort.onDisconnect.addListener(() => {
+        keepAlivePort = null;
+        setTimeout(ensureKeepAlive, 1500);
+      });
+    } catch {
+      keepAlivePort = null;
+    }
+  }
+  function highlightVideo(video) {
+    clearHighlight();
+    highlightedVideo = video;
+    originalOutline = video.style.outline;
+    originalBoxShadow = video.style.boxShadow;
+    video.style.setProperty("outline", "3px solid #38bdf8", "important");
+    video.style.setProperty("box-shadow", "0 0 16px rgba(56, 189, 248, 0.75)", "important");
+  }
+  function clearHighlight() {
+    if (highlightedVideo) {
+      highlightedVideo.style.outline = originalOutline;
+      highlightedVideo.style.boxShadow = originalBoxShadow;
+      highlightedVideo = null;
+    }
+  }
+  function getVideoTitle(video) {
+    if (video.title && video.title.trim()) return video.title.trim();
+    const ariaLabel = video.getAttribute("aria-label");
+    if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+    if (video.currentSrc) {
+      try {
+        const url = new URL(video.currentSrc);
+        const filename = url.pathname.split("/").filter(Boolean).pop();
+        if (filename && !filename.includes(".m3u8")) {
+          return decodeURIComponent(filename).slice(0, 36);
+        }
+      } catch {
+      }
+    }
+    const pageTitle = document.title ? document.title.replace(/\s*-\s*YouTube$/, "").trim() : "";
+    if (pageTitle) return pageTitle.slice(0, 36);
+    return "HTML5 Video Player";
+  }
   function getTargetVideo() {
+    if (!settings.autoEmbed && selectedVideoId) {
+      for (const binding of bindings.values()) {
+        if (binding.id === selectedVideoId && binding.video.isConnected && isEligibleVideo(binding.video)) {
+          return binding.video;
+        }
+      }
+    }
     if (activeVideo && activeVideo.isConnected && !activeVideo.paused && isEligibleVideo(activeVideo)) {
       return activeVideo;
     }
@@ -626,26 +706,56 @@
     }
     return null;
   }
+  function getDetectedVideosList() {
+    scanVideos();
+    const target = getTargetVideo();
+    const list = [];
+    for (const binding of bindings.values()) {
+      if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
+      const v = binding.video;
+      const rect = v.getBoundingClientRect();
+      list.push({
+        id: binding.id,
+        src: v.src || "",
+        currentSrc: v.currentSrc || "",
+        currentTime: v.currentTime || 0,
+        duration: v.duration && !isNaN(v.duration) ? v.duration : 0,
+        paused: v.paused,
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        isSelected: target === v,
+        title: getVideoTitle(v)
+      });
+    }
+    return list;
+  }
   function scanVideos() {
     const discovered = findAllVideos(document);
     for (const video of discovered) {
       if (!bindings.has(video) && isEligibleVideo(video)) {
+        const vidId = video.dataset.whisperVideoId || (video.dataset.whisperVideoId = "vid_" + Math.random().toString(36).substring(2, 9));
         const overlay = new VideoOverlay(video, settings);
         const binding = {
+          id: vidId,
           video,
           overlay,
           lastPlayed: video.paused ? 0 : Date.now()
         };
         video.addEventListener("play", () => {
           binding.lastPlayed = Date.now();
-          activeVideo = video;
+          if (settings.autoEmbed) {
+            activeVideo = video;
+          }
         });
         video.addEventListener("playing", () => {
           binding.lastPlayed = Date.now();
-          activeVideo = video;
+          if (settings.autoEmbed) {
+            activeVideo = video;
+          }
         });
         bindings.set(video, binding);
-        console.log("[whisper-cli-sub-injector] Bound video element candidate:", video);
+        ensureKeepAlive();
+        console.log("[whisper-cli-sub-injector] Bound video element candidate:", vidId, video);
       }
     }
     for (const [video, binding] of bindings.entries()) {
@@ -658,7 +768,33 @@
       }
     }
   }
-  chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
+  function onTabActivated(cueFromBg) {
+    ensureKeepAlive();
+    scanVideos();
+    const target = getTargetVideo();
+    if (target) {
+      const binding = bindings.get(target);
+      if (binding) {
+        binding.overlay.updatePosition();
+        if (target.paused && settings.pauseSubtitlesWithVideo) {
+          binding.overlay.refreshPausedSubtitle();
+        }
+        if (cueFromBg) {
+          binding.overlay.restoreIfIdle(cueFromBg);
+        }
+      }
+    }
+    chrome.runtime.sendMessage({ type: "TAB_FOCUSED" }, (res) => {
+      if (chrome.runtime.lastError || !res) return;
+      if (res.lastCue && target) {
+        const binding = bindings.get(target);
+        if (binding) {
+          binding.overlay.restoreIfIdle(res.lastCue);
+        }
+      }
+    });
+  }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "NEW_SUBTITLE") {
       const target = getTargetVideo();
       if (target) {
@@ -680,6 +816,55 @@
       for (const binding of bindings.values()) {
         binding.overlay.clearTimelineCache();
       }
+    } else if (message.type === "GET_DETECTED_VIDEOS") {
+      sendResponse({
+        videos: getDetectedVideosList(),
+        autoEmbed: settings.autoEmbed ?? true,
+        selectedVideoId
+      });
+      return true;
+    } else if (message.type === "SELECT_VIDEO") {
+      selectedVideoId = message.videoId;
+      settings.autoEmbed = false;
+      for (const binding of bindings.values()) {
+        if (binding.id === message.videoId) {
+          activeVideo = binding.video;
+          binding.overlay.updatePosition();
+        } else {
+          binding.overlay.hide();
+        }
+      }
+      sendResponse({ success: true, activeVideoId: selectedVideoId });
+      return true;
+    } else if (message.type === "SET_AUTO_EMBED") {
+      settings.autoEmbed = message.autoEmbed;
+      if (message.autoEmbed) {
+        selectedVideoId = null;
+        activeVideo = getTargetVideo();
+      }
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "HIGHLIGHT_VIDEO") {
+      for (const binding of bindings.values()) {
+        if (binding.id === message.videoId) {
+          highlightVideo(binding.video);
+          break;
+        }
+      }
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "UNHIGHLIGHT_VIDEO") {
+      clearHighlight();
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "TAB_ACTIVATED") {
+      if (message.settings) {
+        settings = message.settings;
+        for (const binding of bindings.values()) {
+          binding.overlay.applySettings(settings);
+        }
+      }
+      onTabActivated(message.lastCue);
     }
   });
   function isEditableElement(el) {
@@ -711,6 +896,7 @@
   }
   function start() {
     initSettings();
+    ensureKeepAlive();
     scanVideos();
     setupKeyNavigation();
     setInterval(scanVideos, 1e3);
@@ -720,6 +906,14 @@
     observer.observe(document.body || document.documentElement, {
       childList: true,
       subtree: true
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        onTabActivated();
+      }
+    });
+    window.addEventListener("focus", () => {
+      onTabActivated();
     });
   }
   if (document.readyState === "loading") {

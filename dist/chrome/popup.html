@@ -32,6 +32,33 @@
     </button>
   </div>
 
+  <div class="section video-section">
+    <div class="section-header-row">
+      <div class="section-label">Detected Videos</div>
+      <button id="refresh-videos-btn" class="btn-icon-link" type="button" title="Rescan videos on tab">
+        <span class="refresh-icon">🔄</span> Refresh
+      </button>
+    </div>
+
+    <div class="control-row row-flex video-auto-row">
+      <label for="auto-embed-toggle" class="auto-embed-label">
+        <span>Auto-embed subtitles</span>
+        <span class="sub-caption">Auto-attach to active / playing video</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="auto-embed-toggle" checked>
+        <span class="slider round"></span>
+      </label>
+    </div>
+
+    <div id="video-list-container" class="video-list-container">
+      <div class="video-empty-state">
+        <span class="empty-icon">🔍</span>
+        <span class="empty-text">Scanning for videos...</span>
+      </div>
+    </div>
+  </div>
+
   <div class="section settings-section">
     <div class="section-label">Display & Behavior</div>
 
@@ -47,7 +74,7 @@
 
     <div class="control-row">
       <label for="bottom-offset">Bottom Distance: <span id="bottom-offset-val">60px</span></label>
-      <input type="range" id="bottom-offset" min="10" max="180" value="60">
+      <input type="range" id="bottom-offset" min="10" max="250" value="60">
     </div>
 
     <div class="control-row row-flex">

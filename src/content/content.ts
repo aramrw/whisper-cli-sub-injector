@@ -1,8 +1,15 @@
-import { DEFAULT_SETTINGS, ExtensionSettings, MessageToContent, SubtitleCue } from '../common/types';
+import {
+  DEFAULT_SETTINGS,
+  DetectedVideoInfo,
+  ExtensionSettings,
+  MessageToContent,
+  SubtitleCue,
+} from '../common/types';
 import { VideoOverlay } from './overlay';
 import { findAllVideos, isEligibleVideo } from './shadow-roots';
 
 interface VideoBinding {
+  id: string;
   video: HTMLMediaElement;
   overlay: VideoOverlay;
   lastPlayed: number;
@@ -11,6 +18,12 @@ interface VideoBinding {
 let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 const bindings: Map<HTMLMediaElement, VideoBinding> = new Map();
 let activeVideo: HTMLMediaElement | null = null;
+let selectedVideoId: string | null = null;
+let keepAlivePort: chrome.runtime.Port | null = null;
+
+let highlightedVideo: HTMLMediaElement | null = null;
+let originalOutline = '';
+let originalBoxShadow = '';
 
 // Load settings from storage
 function initSettings() {
@@ -22,8 +35,72 @@ function initSettings() {
   });
 }
 
+// Establish or revive persistent keep-alive port to background service worker
+function ensureKeepAlive() {
+  if (keepAlivePort) return;
+  try {
+    keepAlivePort = chrome.runtime.connect({ name: 'whisper-keepalive' });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+      setTimeout(ensureKeepAlive, 1500);
+    });
+  } catch {
+    keepAlivePort = null;
+  }
+}
+
+// Helper to highlight a video element on the webpage (like asbplayer)
+function highlightVideo(video: HTMLMediaElement) {
+  clearHighlight();
+  highlightedVideo = video;
+  originalOutline = video.style.outline;
+  originalBoxShadow = video.style.boxShadow;
+  video.style.setProperty('outline', '3px solid #38bdf8', 'important');
+  video.style.setProperty('box-shadow', '0 0 16px rgba(56, 189, 248, 0.75)', 'important');
+}
+
+function clearHighlight() {
+  if (highlightedVideo) {
+    highlightedVideo.style.outline = originalOutline;
+    highlightedVideo.style.boxShadow = originalBoxShadow;
+    highlightedVideo = null;
+  }
+}
+
+// Format video title for UI
+function getVideoTitle(video: HTMLMediaElement): string {
+  if (video.title && video.title.trim()) return video.title.trim();
+  const ariaLabel = video.getAttribute('aria-label');
+  if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+
+  if (video.currentSrc) {
+    try {
+      const url = new URL(video.currentSrc);
+      const filename = url.pathname.split('/').filter(Boolean).pop();
+      if (filename && !filename.includes('.m3u8')) {
+        return decodeURIComponent(filename).slice(0, 36);
+      }
+    } catch {}
+  }
+
+  const pageTitle = document.title ? document.title.replace(/\s*-\s*YouTube$/, '').trim() : '';
+  if (pageTitle) return pageTitle.slice(0, 36);
+
+  return 'HTML5 Video Player';
+}
+
 // Determine which video should display subtitles
 function getTargetVideo(): HTMLMediaElement | null {
+  // If manual selection is active and a video is selected:
+  if (!settings.autoEmbed && selectedVideoId) {
+    for (const binding of bindings.values()) {
+      if (binding.id === selectedVideoId && binding.video.isConnected && isEligibleVideo(binding.video)) {
+        return binding.video;
+      }
+    }
+  }
+
+  // Automatic selection logic (autoEmbed is enabled, or fallback):
   // 1. If active video is still connected and playing
   if (activeVideo && activeVideo.isConnected && !activeVideo.paused && isEligibleVideo(activeVideo)) {
     return activeVideo;
@@ -76,6 +153,33 @@ function getTargetVideo(): HTMLMediaElement | null {
   return null;
 }
 
+// Build detected videos info list for popup
+function getDetectedVideosList(): DetectedVideoInfo[] {
+  scanVideos();
+  const target = getTargetVideo();
+  const list: DetectedVideoInfo[] = [];
+
+  for (const binding of bindings.values()) {
+    if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
+    const v = binding.video;
+    const rect = v.getBoundingClientRect();
+
+    list.push({
+      id: binding.id,
+      src: v.src || '',
+      currentSrc: v.currentSrc || '',
+      currentTime: v.currentTime || 0,
+      duration: v.duration && !isNaN(v.duration) ? v.duration : 0,
+      paused: v.paused,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      isSelected: target === v,
+      title: getVideoTitle(v),
+    });
+  }
+  return list;
+}
+
 // Discovery loop
 function scanVideos() {
   const discovered = findAllVideos(document);
@@ -83,8 +187,13 @@ function scanVideos() {
   // Bind new videos
   for (const video of discovered) {
     if (!bindings.has(video) && isEligibleVideo(video)) {
+      const vidId =
+        video.dataset.whisperVideoId ||
+        (video.dataset.whisperVideoId = 'vid_' + Math.random().toString(36).substring(2, 9));
+
       const overlay = new VideoOverlay(video, settings);
       const binding: VideoBinding = {
+        id: vidId,
         video,
         overlay,
         lastPlayed: video.paused ? 0 : Date.now(),
@@ -92,16 +201,21 @@ function scanVideos() {
 
       video.addEventListener('play', () => {
         binding.lastPlayed = Date.now();
-        activeVideo = video;
+        if (settings.autoEmbed) {
+          activeVideo = video;
+        }
       });
 
       video.addEventListener('playing', () => {
         binding.lastPlayed = Date.now();
-        activeVideo = video;
+        if (settings.autoEmbed) {
+          activeVideo = video;
+        }
       });
 
       bindings.set(video, binding);
-      console.log('[whisper-cli-sub-injector] Bound video element candidate:', video);
+      ensureKeepAlive();
+      console.log('[whisper-cli-sub-injector] Bound video element candidate:', vidId, video);
     }
   }
 
@@ -117,8 +231,38 @@ function scanVideos() {
   }
 }
 
-// Handle messages from background service worker
-chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, _sendResponse) => {
+// Handle tab activation & visibility changes
+function onTabActivated(cueFromBg?: SubtitleCue | null) {
+  ensureKeepAlive();
+  scanVideos();
+  const target = getTargetVideo();
+  if (target) {
+    const binding = bindings.get(target);
+    if (binding) {
+      binding.overlay.updatePosition();
+      if (target.paused && settings.pauseSubtitlesWithVideo) {
+        binding.overlay.refreshPausedSubtitle();
+      }
+      if (cueFromBg) {
+        binding.overlay.restoreIfIdle(cueFromBg);
+      }
+    }
+  }
+
+  // Query background for latest connection status and last cue
+  chrome.runtime.sendMessage({ type: 'TAB_FOCUSED' }, (res) => {
+    if (chrome.runtime.lastError || !res) return;
+    if (res.lastCue && target) {
+      const binding = bindings.get(target);
+      if (binding) {
+        binding.overlay.restoreIfIdle(res.lastCue);
+      }
+    }
+  });
+}
+
+// Handle messages from background worker or popup
+chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, sendResponse) => {
   if (message.type === 'NEW_SUBTITLE') {
     const target = getTargetVideo();
     if (target) {
@@ -140,6 +284,55 @@ chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, _sendR
     for (const binding of bindings.values()) {
       binding.overlay.clearTimelineCache();
     }
+  } else if (message.type === 'GET_DETECTED_VIDEOS') {
+    sendResponse({
+      videos: getDetectedVideosList(),
+      autoEmbed: settings.autoEmbed ?? true,
+      selectedVideoId,
+    });
+    return true;
+  } else if (message.type === 'SELECT_VIDEO') {
+    selectedVideoId = message.videoId;
+    settings.autoEmbed = false;
+    for (const binding of bindings.values()) {
+      if (binding.id === message.videoId) {
+        activeVideo = binding.video;
+        binding.overlay.updatePosition();
+      } else {
+        binding.overlay.hide();
+      }
+    }
+    sendResponse({ success: true, activeVideoId: selectedVideoId });
+    return true;
+  } else if (message.type === 'SET_AUTO_EMBED') {
+    settings.autoEmbed = message.autoEmbed;
+    if (message.autoEmbed) {
+      selectedVideoId = null;
+      activeVideo = getTargetVideo();
+    }
+    sendResponse({ success: true });
+    return true;
+  } else if (message.type === 'HIGHLIGHT_VIDEO') {
+    for (const binding of bindings.values()) {
+      if (binding.id === message.videoId) {
+        highlightVideo(binding.video);
+        break;
+      }
+    }
+    sendResponse({ success: true });
+    return true;
+  } else if (message.type === 'UNHIGHLIGHT_VIDEO') {
+    clearHighlight();
+    sendResponse({ success: true });
+    return true;
+  } else if (message.type === 'TAB_ACTIVATED') {
+    if (message.settings) {
+      settings = message.settings;
+      for (const binding of bindings.values()) {
+        binding.overlay.applySettings(settings);
+      }
+    }
+    onTabActivated(message.lastCue);
   }
 });
 
@@ -182,6 +375,7 @@ function setupKeyNavigation() {
 // Setup continuous discovery
 function start() {
   initSettings();
+  ensureKeepAlive();
   scanVideos();
   setupKeyNavigation();
 
@@ -195,6 +389,17 @@ function start() {
   observer.observe(document.body || document.documentElement, {
     childList: true,
     subtree: true,
+  });
+
+  // Re-sync on visibility change (switching tabs back) and focus
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      onTabActivated();
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    onTabActivated();
   });
 }
 

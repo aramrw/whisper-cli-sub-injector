@@ -5,7 +5,9 @@
   "description": "Real-time subtitles for HTML5 video elements powered by whisper-cli live transcription",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "tabs",
+    "alarms"
   ],
   "host_permissions": [
     "http://localhost/*",

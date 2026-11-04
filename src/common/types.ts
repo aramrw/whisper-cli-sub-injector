@@ -47,6 +47,19 @@ export function getRetentionMs(duration: HistoryRetentionDuration): number {
   }
 }
 
+export interface DetectedVideoInfo {
+  id: string;
+  src: string;
+  currentSrc: string;
+  currentTime: number;
+  duration: number;
+  paused: boolean;
+  width: number;
+  height: number;
+  isSelected: boolean;
+  title: string;
+}
+
 export interface ExtensionSettings {
   serverUrl: string;
   enabled: boolean;
@@ -66,6 +79,7 @@ export interface ExtensionSettings {
   subNavigationPlayOnSeek: boolean;
   subNavigationPaddingMs: number;
   enableSubtitleCache: boolean;
+  autoEmbed: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -87,6 +101,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   subNavigationPlayOnSeek: true,
   subNavigationPaddingMs: 150,
   enableSubtitleCache: true,
+  autoEmbed: true,
 };
 
 export type MessageToContent =
@@ -94,7 +109,13 @@ export type MessageToContent =
   | { type: 'SETTINGS_CHANGED'; settings: ExtensionSettings }
   | { type: 'SERVER_STATUS'; connected: boolean; url: string }
   | { type: 'CLEAR_SUBTITLES' }
-  | { type: 'CLEAR_TIMELINE_CACHE' };
+  | { type: 'CLEAR_TIMELINE_CACHE' }
+  | { type: 'GET_DETECTED_VIDEOS' }
+  | { type: 'SELECT_VIDEO'; videoId: string }
+  | { type: 'SET_AUTO_EMBED'; autoEmbed: boolean }
+  | { type: 'HIGHLIGHT_VIDEO'; videoId: string }
+  | { type: 'UNHIGHLIGHT_VIDEO' }
+  | { type: 'TAB_ACTIVATED'; settings: ExtensionSettings; lastCue: SubtitleCue | null; connected: boolean };
 
 export type MessageToBackground =
   | { type: 'GET_STATUS' }
@@ -102,6 +123,7 @@ export type MessageToBackground =
   | { type: 'UPDATE_SETTINGS'; settings: Partial<ExtensionSettings> }
   | { type: 'RECONNECT' }
   | { type: 'PING' }
+  | { type: 'TAB_FOCUSED' }
   | { type: 'GET_HISTORY' }
   | { type: 'GET_HISTORY_SETTINGS' }
   | { type: 'UPDATE_HISTORY_SETTINGS'; settings: Partial<HistorySettings> }

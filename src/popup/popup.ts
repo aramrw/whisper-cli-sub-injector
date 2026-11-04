@@ -1,10 +1,15 @@
-import { ExtensionSettings, SubtitleCue } from '../common/types';
+import { DetectedVideoInfo, ExtensionSettings, SubtitleCue } from '../common/types';
 
 document.addEventListener('DOMContentLoaded', () => {
   const enabledToggle = document.getElementById('enabled-toggle') as HTMLInputElement;
   const statusDot = document.getElementById('status-dot') as HTMLSpanElement;
   const statusText = document.getElementById('status-text') as HTMLSpanElement;
   const openHistoryBtn = document.getElementById('open-history-btn') as HTMLButtonElement;
+
+  // Detected Videos elements
+  const autoEmbedToggle = document.getElementById('auto-embed-toggle') as HTMLInputElement;
+  const refreshVideosBtn = document.getElementById('refresh-videos-btn') as HTMLButtonElement;
+  const videoListContainer = document.getElementById('video-list-container') as HTMLDivElement;
 
   const pauseWithVideoCheckbox = document.getElementById('pause-with-video') as HTMLInputElement;
   const fontSizeInput = document.getElementById('font-size') as HTMLInputElement;
@@ -54,10 +59,161 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function escapeHtml(str: string): string {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function formatDuration(sec: number): string {
+    if (isNaN(sec) || sec <= 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  }
+
+  function renderVideoList(
+    videos: DetectedVideoInfo[],
+    autoEmbed: boolean,
+    _selectedVideoId: string | null
+  ) {
+    if (!videoListContainer) return;
+    videoListContainer.innerHTML = '';
+
+    if (!videos || videos.length === 0) {
+      videoListContainer.innerHTML = `
+        <div class="video-empty-state">
+          <span class="empty-icon">🎬</span>
+          <span class="empty-text">No video elements found on this tab.</span>
+        </div>
+      `;
+      return;
+    }
+
+    for (const vid of videos) {
+      const card = document.createElement('div');
+      const isTargeted = vid.isSelected;
+      card.className = `video-card ${isTargeted ? 'active-target' : ''}`;
+      card.dataset.videoId = vid.id;
+
+      const statusIcon = vid.paused ? '⏸' : '▶';
+      const statusTitle = vid.paused ? 'Paused' : 'Playing';
+      const durStr =
+        vid.duration > 0
+          ? `${formatDuration(vid.currentTime)} / ${formatDuration(vid.duration)}`
+          : formatDuration(vid.currentTime);
+      const resStr = vid.width && vid.height ? `${vid.width}×${vid.height}` : 'Video';
+
+      let badgeHtml = '';
+      if (isTargeted) {
+        if (autoEmbed) {
+          badgeHtml = `<span class="video-badge badge-auto">Auto-Targeted</span>`;
+        } else {
+          badgeHtml = `<span class="video-badge badge-manual">Selected</span>`;
+        }
+      }
+
+      card.innerHTML = `
+        <div class="video-card-top">
+          <span class="video-play-status ${vid.paused ? 'paused' : 'playing'}" title="${statusTitle}">
+            ${statusIcon}
+          </span>
+          <span class="video-title" title="${escapeHtml(vid.title)}">
+            ${escapeHtml(vid.title)}
+          </span>
+          ${badgeHtml}
+        </div>
+        <div class="video-card-meta">
+          <span class="meta-item">${resStr}</span>
+          <span class="meta-sep">•</span>
+          <span class="meta-item">${durStr}</span>
+          ${!isTargeted ? '<span class="select-hint">Click to target</span>' : ''}
+        </div>
+      `;
+
+      // Click: manually target this video and disable autoEmbed
+      card.addEventListener('click', () => {
+        autoEmbedToggle.checked = false;
+        saveSetting({ autoEmbed: false });
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(
+              tabs[0].id,
+              { type: 'SELECT_VIDEO', videoId: vid.id },
+              () => {
+                fetchDetectedVideos();
+              }
+            );
+          }
+        });
+      });
+
+      // Hover: highlight the video on the actual webpage
+      card.addEventListener('mouseenter', () => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(tabs[0].id, {
+              type: 'HIGHLIGHT_VIDEO',
+              videoId: vid.id,
+            }).catch(() => {});
+          }
+        });
+      });
+
+      card.addEventListener('mouseleave', () => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(tabs[0].id, { type: 'UNHIGHLIGHT_VIDEO' }).catch(() => {});
+          }
+        });
+      });
+
+      videoListContainer.appendChild(card);
+    }
+  }
+
+  function fetchDetectedVideos() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs[0];
+      if (!activeTab?.id) {
+        if (videoListContainer) {
+          videoListContainer.innerHTML = `
+            <div class="video-empty-state">
+              <span class="empty-icon">⚠️</span>
+              <span class="empty-text">No active tab found.</span>
+            </div>
+          `;
+        }
+        return;
+      }
+
+      chrome.tabs.sendMessage(activeTab.id, { type: 'GET_DETECTED_VIDEOS' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          if (videoListContainer) {
+            videoListContainer.innerHTML = `
+              <div class="video-empty-state">
+                <span class="empty-icon">🔍</span>
+                <span class="empty-text">No HTML5 video elements detected.</span>
+              </div>
+            `;
+          }
+          return;
+        }
+
+        if (res.autoEmbed !== undefined) {
+          autoEmbedToggle.checked = res.autoEmbed;
+        }
+        renderVideoList(res.videos, res.autoEmbed, res.selectedVideoId);
+      });
+    });
+  }
+
   // Load initial settings and status
   chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (settings: ExtensionSettings) => {
     if (!settings) return;
     enabledToggle.checked = settings.enabled;
+    autoEmbedToggle.checked = settings.autoEmbed ?? true;
+
     pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;
     fontSizeInput.value = String(settings.fontSize);
     fontSizeVal.textContent = `${settings.fontSize}px`;
@@ -88,6 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   fetchCurrentStatus();
+  fetchDetectedVideos();
 
   // Settings update helper
   function saveSetting(patch: Partial<ExtensionSettings>) {
@@ -97,6 +254,35 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // Auto-embed toggle
+  autoEmbedToggle.addEventListener('change', () => {
+    const isAuto = autoEmbedToggle.checked;
+    saveSetting({ autoEmbed: isAuto });
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          { type: 'SET_AUTO_EMBED', autoEmbed: isAuto },
+          () => {
+            fetchDetectedVideos();
+          }
+        );
+      }
+    });
+  });
+
+  // Refresh detected videos button
+  refreshVideosBtn.addEventListener('click', () => {
+    const icon = refreshVideosBtn.querySelector('.refresh-icon') as HTMLElement;
+    if (icon) {
+      icon.style.transform = 'rotate(180deg)';
+      setTimeout(() => {
+        icon.style.transform = '';
+      }, 350);
+    }
+    fetchDetectedVideos();
+  });
 
   enabledToggle.addEventListener('change', () => {
     saveSetting({ enabled: enabledToggle.checked });
@@ -231,6 +417,19 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
         chrome.tabs.sendMessage(tabs[0].id, { type: 'NEW_SUBTITLE', cue });
+      }
+    });
+  });
+
+  // Periodic polling for detected videos while popup is open
+  const pollInterval = setInterval(fetchDetectedVideos, 2500);
+
+  window.addEventListener('unload', () => {
+    clearInterval(pollInterval);
+    // Clear video outline highlight on tab if popup closes
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'UNHIGHLIGHT_VIDEO' }).catch(() => {});
       }
     });
   });

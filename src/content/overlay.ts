@@ -64,7 +64,7 @@ export class VideoOverlay {
     this.container.style.setProperty('pointer-events', 'none', 'important');
     this.container.style.setProperty('position', 'absolute', 'important');
     this.container.style.setProperty('z-index', '2147483647', 'important');
-    this.container.style.setProperty('transition', 'opacity 0.25s ease, transform 0.2s ease', 'important');
+    this.container.style.setProperty('transition', 'opacity 0.25s ease', 'important');
     this.container.style.setProperty('opacity', '0', 'important');
 
     // Create stack container
@@ -285,6 +285,10 @@ export class VideoOverlay {
   updatePosition() {
     if (!this.container || !this.video) return;
 
+    if (!this.container.isConnected) {
+      this.attach();
+    }
+
     const rect = this.video.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) {
       this.container.style.display = 'none';
@@ -324,10 +328,12 @@ export class VideoOverlay {
     }
 
     const maxWidth = Math.max(200, Math.min(rect.width * 0.90, window.innerWidth * 0.92));
+    const isTop = this.settings.alignment === 'top';
+    const transformVal = isTop ? 'translateX(-50%)' : 'translate(-50%, -100%)';
 
     this.container.style.setProperty('left', `${centerX}px`, 'important');
     this.container.style.setProperty('top', `${targetY}px`, 'important');
-    this.container.style.setProperty('transform', 'translateX(-50%)', 'important');
+    this.container.style.setProperty('transform', transformVal, 'important');
     this.container.style.setProperty('max-width', `${maxWidth}px`, 'important');
   }
 
@@ -335,6 +341,25 @@ export class VideoOverlay {
     this.timeline = [];
     this.activeReplayCue = null;
     console.log('[whisper-cli-sub-injector] Subtitle replay cache cleared.');
+  }
+
+  restoreIfIdle(cue: SubtitleCue) {
+    if (!this.settings.enabled) return;
+    const isVisible = this.container && this.container.style.opacity === '1';
+    if (this.activeCues.length === 0 || !isVisible) {
+      const isFresh = Date.now() - cue.receivedAt < 45000;
+      if (isFresh || this.video.paused) {
+        this.showCue(cue);
+      }
+    }
+  }
+
+  refreshPausedSubtitle() {
+    if (!this.settings.enabled) return;
+    if (this.activeCues.length > 0 && this.container) {
+      this.updatePosition();
+      this.container.style.setProperty('opacity', '1', 'important');
+    }
   }
 
   showCue(cue: SubtitleCue) {

@@ -53,7 +53,7 @@ async function buildTarget(target) {
     name: 'Whisper Live Subtitles',
     version: '1.0.0',
     description: 'Real-time subtitles for HTML5 video elements powered by whisper-cli live transcription',
-    permissions: ['storage', 'activeTab'],
+    permissions: ['storage', 'activeTab', 'tabs', 'alarms'],
     host_permissions: ['http://localhost/*', 'http://127.0.0.1/*', '<all_urls>'],
     action: {
       default_popup: 'popup.html',
