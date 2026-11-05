@@ -38,10 +38,21 @@
     maxLines: 3,
     stackMode: true,
     pauseSubtitlesWithVideo: true,
+    ignoreSubtitlesWhenPaused: true,
     subNavigationEnabled: true,
+    subForwardNavigationEnabled: true,
     subNavigationPlayOnSeek: true,
     subNavigationPaddingMs: 150,
     enableSubtitleCache: true,
+    exactByteTiming: true,
+    splitMultiSentenceCues: true,
+    autoHealTimelineOverlaps: false,
+    cementSubtitlesInTimeline: true,
+    showRerecordButton: true,
+    showPrevButton: true,
+    showNextButton: true,
+    srtStartPaddingMs: 50,
+    srtEndPaddingMs: 100,
     autoEmbed: true
   };
 
@@ -97,12 +108,13 @@
     const cleanNew = cue.text.trim();
     if (!cleanNew) return;
     const lastEntry = historyCache.length > 0 ? historyCache[historyCache.length - 1] : null;
-    const isContinuation = lastEntry && (lastEntry.id === cue.id || cleanNew.startsWith(lastEntry.text) || lastEntry.text.startsWith(cleanNew) || Date.now() - lastEntry.receivedAt < 4e3 && cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15));
+    const isContinuation = lastEntry && (lastEntry.id === cue.id || !lastEntry.isFinal && (cleanNew.startsWith(lastEntry.text) || lastEntry.text.startsWith(cleanNew) || Date.now() - lastEntry.receivedAt < 4e3 && cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15)));
     if (isContinuation && lastEntry) {
       lastEntry.text = cleanNew;
       lastEntry.timestamp = cue.timestamp || lastEntry.timestamp;
       lastEntry.receivedAt = cue.receivedAt;
       lastEntry.id = cue.id;
+      lastEntry.durationMs = cue.durationMs ?? lastEntry.durationMs;
       lastEntry.isFinal = cue.isFinal;
       await chrome.storage.local.set({ subtitleHistory: historyCache });
       chrome.runtime.sendMessage({
@@ -117,6 +129,7 @@
       text: cleanNew,
       timestamp: cue.timestamp,
       receivedAt: cue.receivedAt,
+      durationMs: cue.durationMs,
       isFinal: cue.isFinal
     };
     historyCache.push(entry);
@@ -205,6 +218,8 @@
             text: data.text || "",
             timestamp: data.timestamp,
             receivedAt: Date.now(),
+            clipStartMs: data.clipStartMs,
+            clipEndMs: data.clipEndMs,
             durationMs: data.durationMs,
             lagMs: data.lagMs,
             isFinal: data.isFinal ?? true
@@ -319,6 +334,91 @@
       sendResponse({ success: true });
       return true;
     }
+    if (message.type === "SYNC_VIDEO_CUE_TIMING") {
+      const { cueId, replacedCueId, text, videoStartTime, videoEndTime, videoTitle, isFinal } = message;
+      let targetIdx = historyCache.findIndex((e) => e.id === cueId);
+      const replacedIdx = replacedCueId ? historyCache.findIndex((e) => e.id === replacedCueId) : -1;
+      if (replacedIdx !== -1 && targetIdx !== -1 && replacedIdx !== targetIdx) {
+        const targetEntry = historyCache[replacedIdx];
+        targetEntry.id = cueId;
+        targetEntry.text = text.trim() || targetEntry.text;
+        targetEntry.videoStartTime = videoStartTime;
+        targetEntry.videoEndTime = videoEndTime;
+        targetEntry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1e3));
+        if (videoTitle) targetEntry.videoTitle = videoTitle;
+        if (isFinal !== void 0) targetEntry.isFinal = isFinal;
+        historyCache.splice(targetIdx, 1);
+        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+          chrome.runtime.sendMessage({
+            type: "UPDATE_HISTORY_ENTRY",
+            entry: targetEntry,
+            fullRefresh: true
+          }).catch(() => {
+          });
+          sendResponse({ success: true });
+        });
+        return true;
+      }
+      if (targetIdx === -1 && replacedIdx !== -1) {
+        targetIdx = replacedIdx;
+      }
+      if (targetIdx === -1 && historyCache.length > 0) {
+        const last = historyCache[historyCache.length - 1];
+        if (Date.now() - last.receivedAt < 6e3) {
+          targetIdx = historyCache.length - 1;
+        }
+      }
+      if (targetIdx !== -1) {
+        const entry = historyCache[targetIdx];
+        if (videoEndTime <= 0.3 && entry.videoEndTime && entry.videoEndTime > 0.5) {
+          sendResponse({ success: false });
+          return true;
+        }
+        entry.id = cueId;
+        if (text.trim()) entry.text = text.trim();
+        entry.videoStartTime = videoStartTime;
+        entry.videoEndTime = videoEndTime;
+        entry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1e3));
+        if (videoTitle) entry.videoTitle = videoTitle;
+        if (isFinal !== void 0) entry.isFinal = isFinal;
+        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+          chrome.runtime.sendMessage({
+            type: "UPDATE_HISTORY_ENTRY",
+            entry
+          }).catch(() => {
+          });
+          sendResponse({ success: true });
+        });
+      } else {
+        sendResponse({ success: false });
+      }
+      return true;
+    }
+    if (message.type === "DROP_PAUSED_HISTORY_CUE") {
+      const idx = historyCache.findIndex((e) => e.id === message.cueId);
+      if (idx !== -1) {
+        const target = historyCache[idx];
+        if (!message.forceDelete && target.videoEndTime && target.videoEndTime > 0.5) {
+          sendResponse({ success: false });
+          return true;
+        }
+        historyCache.splice(idx, 1);
+        if (lastCue && lastCue.id === message.cueId) {
+          lastCue = historyCache.length > 0 ? { ...historyCache[historyCache.length - 1] } : null;
+        }
+        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+          chrome.runtime.sendMessage({
+            type: "UPDATE_HISTORY_ENTRY",
+            fullRefresh: true
+          }).catch(() => {
+          });
+          sendResponse({ success: true });
+        });
+      } else {
+        sendResponse({ success: false });
+      }
+      return true;
+    }
   });
   setInterval(() => {
     pruneHistory();
@@ -362,6 +462,25 @@
   } catch (e) {
     console.warn("[whisper-cli-sub-injector] chrome.alarms not initialized:", e);
   }
+  function reinjectContentScriptsIntoOpenTabs() {
+    try {
+      if (!chrome.scripting?.executeScript || !chrome.tabs?.query) return;
+      chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }, (tabs) => {
+        for (const tab of tabs) {
+          if (!tab.id) continue;
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id, allFrames: true },
+            files: ["content.js"]
+          }).catch(() => {
+          });
+        }
+      });
+    } catch {
+    }
+  }
+  chrome.runtime.onInstalled?.addListener(() => {
+    reinjectContentScriptsIntoOpenTabs();
+  });
   Promise.all([loadSettings(), loadHistory()]).then(() => {
     updateBadge();
     connectToEventSource();

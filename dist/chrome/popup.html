@@ -27,7 +27,12 @@
   <div class="history-action-box">
     <button id="open-history-btn" class="btn btn-history">
       <span class="btn-icon">📜</span>
-      <span class="btn-label">Open Subtitle History</span>
+      <span class="btn-label">Subtitle History</span>
+      <span class="btn-arrow">↗</span>
+    </button>
+    <button id="open-options-btn" class="btn btn-history btn-options">
+      <span class="btn-icon">⚙️</span>
+      <span class="btn-label">Options</span>
       <span class="btn-arrow">↗</span>
     </button>
   </div>
@@ -63,8 +68,13 @@
     <div class="section-label">Display & Behavior</div>
 
     <div class="control-row row-flex">
-      <label for="pause-with-video">Pause subs when video pauses:</label>
+      <label for="pause-with-video">Freeze sub when video pauses:</label>
       <input type="checkbox" id="pause-with-video" checked>
+    </div>
+
+    <div class="control-row row-flex">
+      <label for="ignore-when-paused">Ignore audio while paused:</label>
+      <input type="checkbox" id="ignore-when-paused" checked>
     </div>
 
     <div class="control-row">
@@ -122,26 +132,6 @@
     <div class="control-row">
       <label for="sub-nav-padding">Replay Padding: <span id="sub-nav-padding-val">150ms</span></label>
       <input type="range" id="sub-nav-padding" min="0" max="500" step="25" value="150">
-    </div>
-
-    <div class="control-row row-flex">
-      <label for="sub-nav-cache">Cache Subtitle Timestamps:</label>
-      <input type="checkbox" id="sub-nav-cache" checked>
-    </div>
-
-    <div class="control-row" style="margin-top: 8px;">
-      <button id="clear-cache-btn" class="btn btn-secondary-btn" style="width: 100%; padding: 6px; font-size: 11px;">
-        🗑️ Clear Subtitle Cache
-      </button>
-    </div>
-  </div>
-
-  <div class="section server-section">
-    <div class="section-label">Server Endpoint:</div>
-    <div class="server-input-row">
-      <input type="text" id="server-url" value="http://127.0.0.1:8989" placeholder="http://127.0.0.1:8989">
-      <button id="connect-btn" class="btn btn-primary" title="Save endpoint and connect">Connect</button>
-      <button id="retry-btn" class="btn btn-secondary-btn" title="Force retry connection">Retry</button>
     </div>
   </div>
 

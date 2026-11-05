@@ -19,6 +19,7 @@ async function buildTarget(target) {
       content: path.join(SRC, 'content/content.ts'),
       popup: path.join(SRC, 'popup/popup.ts'),
       history: path.join(SRC, 'history/history.ts'),
+      options: path.join(SRC, 'options/options.ts'),
     },
     bundle: true,
     outdir: outDir,
@@ -34,6 +35,8 @@ async function buildTarget(target) {
   fs.copyFileSync(path.join(SRC, 'popup/popup.css'), path.join(outDir, 'popup.css'));
   fs.copyFileSync(path.join(SRC, 'history/history.html'), path.join(outDir, 'history.html'));
   fs.copyFileSync(path.join(SRC, 'history/history.css'), path.join(outDir, 'history.css'));
+  fs.copyFileSync(path.join(SRC, 'options/options.html'), path.join(outDir, 'options.html'));
+  fs.copyFileSync(path.join(SRC, 'options/options.css'), path.join(outDir, 'options.css'));
 
   // Copy icons
   const iconDestDir = path.join(outDir, 'icons');
@@ -53,7 +56,7 @@ async function buildTarget(target) {
     name: 'Whisper Live Subtitles',
     version: '1.0.0',
     description: 'Real-time subtitles for HTML5 video elements powered by whisper-cli live transcription',
-    permissions: ['storage', 'activeTab', 'tabs', 'alarms'],
+    permissions: ['storage', 'activeTab', 'tabs', 'alarms', 'scripting'],
     host_permissions: ['http://localhost/*', 'http://127.0.0.1/*', '<all_urls>'],
     action: {
       default_popup: 'popup.html',
@@ -62,6 +65,10 @@ async function buildTarget(target) {
         '48': 'icons/icon48.png',
         '128': 'icons/icon128.png',
       },
+    },
+    options_ui: {
+      page: 'options.html',
+      open_in_tab: true,
     },
     icons: {
       '16': 'icons/icon16.png',

@@ -76,10 +76,11 @@ async function addCueToHistory(cue: SubtitleCue): Promise<void> {
   const isContinuation =
     lastEntry &&
     (lastEntry.id === cue.id ||
-      cleanNew.startsWith(lastEntry.text) ||
-      lastEntry.text.startsWith(cleanNew) ||
-      (Date.now() - lastEntry.receivedAt < 4000 &&
-        cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15)));
+      (!lastEntry.isFinal &&
+        (cleanNew.startsWith(lastEntry.text) ||
+          lastEntry.text.startsWith(cleanNew) ||
+          (Date.now() - lastEntry.receivedAt < 4000 &&
+            cleanNew.toLowerCase().slice(0, 15) === lastEntry.text.toLowerCase().slice(0, 15)))));
 
   if (isContinuation && lastEntry) {
     // Overwrite the existing entry with the latest complete/longer text!
@@ -87,6 +88,7 @@ async function addCueToHistory(cue: SubtitleCue): Promise<void> {
     lastEntry.timestamp = cue.timestamp || lastEntry.timestamp;
     lastEntry.receivedAt = cue.receivedAt;
     lastEntry.id = cue.id;
+    lastEntry.durationMs = cue.durationMs ?? lastEntry.durationMs;
     lastEntry.isFinal = cue.isFinal;
 
     await chrome.storage.local.set({ subtitleHistory: historyCache });
@@ -103,6 +105,7 @@ async function addCueToHistory(cue: SubtitleCue): Promise<void> {
     text: cleanNew,
     timestamp: cue.timestamp,
     receivedAt: cue.receivedAt,
+    durationMs: cue.durationMs,
     isFinal: cue.isFinal,
   };
 
@@ -213,6 +216,8 @@ function connectToEventSource() {
           text: data.text || '',
           timestamp: data.timestamp,
           receivedAt: Date.now(),
+          clipStartMs: data.clipStartMs,
+          clipEndMs: data.clipEndMs,
           durationMs: data.durationMs,
           lagMs: data.lagMs,
           isFinal: data.isFinal ?? true,
@@ -343,6 +348,101 @@ chrome.runtime.onMessage.addListener((message: MessageToBackground, _sender, sen
     sendResponse({ success: true });
     return true;
   }
+
+  if (message.type === 'SYNC_VIDEO_CUE_TIMING') {
+    const { cueId, replacedCueId, text, videoStartTime, videoEndTime, videoTitle, isFinal } = message;
+
+    // If an auto-healed rewind replaced an earlier fragment, remove the duplicate if both exist
+    let targetIdx = historyCache.findIndex((e) => e.id === cueId);
+    const replacedIdx = replacedCueId ? historyCache.findIndex((e) => e.id === replacedCueId) : -1;
+
+    if (replacedIdx !== -1 && targetIdx !== -1 && replacedIdx !== targetIdx) {
+      // Merge into replacedIdx and remove the duplicate newer entry
+      const targetEntry = historyCache[replacedIdx];
+      targetEntry.id = cueId;
+      targetEntry.text = text.trim() || targetEntry.text;
+      targetEntry.videoStartTime = videoStartTime;
+      targetEntry.videoEndTime = videoEndTime;
+      targetEntry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1000));
+      if (videoTitle) targetEntry.videoTitle = videoTitle;
+      if (isFinal !== undefined) targetEntry.isFinal = isFinal;
+      historyCache.splice(targetIdx, 1);
+
+      chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+        chrome.runtime.sendMessage({
+          type: 'UPDATE_HISTORY_ENTRY',
+          entry: targetEntry,
+          fullRefresh: true,
+        }).catch(() => {});
+        sendResponse({ success: true });
+      });
+      return true;
+    }
+
+    if (targetIdx === -1 && replacedIdx !== -1) {
+      targetIdx = replacedIdx;
+    }
+    if (targetIdx === -1 && historyCache.length > 0) {
+      // Fallback: match the latest entry if text matches closely
+      const last = historyCache[historyCache.length - 1];
+      if (Date.now() - last.receivedAt < 6000) {
+        targetIdx = historyCache.length - 1;
+      }
+    }
+
+    if (targetIdx !== -1) {
+      const entry = historyCache[targetIdx];
+      // Never let an unloaded 00:00.0 video element from another frame overwrite a real playing video timestamp
+      if (videoEndTime <= 0.3 && entry.videoEndTime && entry.videoEndTime > 0.5) {
+        sendResponse({ success: false });
+        return true;
+      }
+      entry.id = cueId;
+      if (text.trim()) entry.text = text.trim();
+      entry.videoStartTime = videoStartTime;
+      entry.videoEndTime = videoEndTime;
+      entry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1000));
+      if (videoTitle) entry.videoTitle = videoTitle;
+      if (isFinal !== undefined) entry.isFinal = isFinal;
+
+      chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+        chrome.runtime.sendMessage({
+          type: 'UPDATE_HISTORY_ENTRY',
+          entry,
+        }).catch(() => {});
+        sendResponse({ success: true });
+      });
+    } else {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
+
+  if (message.type === 'DROP_PAUSED_HISTORY_CUE') {
+    const idx = historyCache.findIndex((e) => e.id === message.cueId);
+    if (idx !== -1) {
+      const target = historyCache[idx];
+      // Do not let a paused background tab drop an entry that already synced a real timestamp from a playing tab
+      if (!message.forceDelete && target.videoEndTime && target.videoEndTime > 0.5) {
+        sendResponse({ success: false });
+        return true;
+      }
+      historyCache.splice(idx, 1);
+      if (lastCue && lastCue.id === message.cueId) {
+        lastCue = historyCache.length > 0 ? { ...historyCache[historyCache.length - 1] } : null;
+      }
+      chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
+        chrome.runtime.sendMessage({
+          type: 'UPDATE_HISTORY_ENTRY',
+          fullRefresh: true,
+        }).catch(() => {});
+        sendResponse({ success: true });
+      });
+    } else {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
 });
 
 // Periodic pruning of old history (every 5 minutes)
@@ -392,6 +492,28 @@ try {
 } catch (e) {
   console.warn('[whisper-cli-sub-injector] chrome.alarms not initialized:', e);
 }
+
+// Re-inject content scripts into already-open tabs on extension reload so no manual page refresh is needed
+function reinjectContentScriptsIntoOpenTabs() {
+  try {
+    if (!chrome.scripting?.executeScript || !chrome.tabs?.query) return;
+    chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (tabs) => {
+      for (const tab of tabs) {
+        if (!tab.id) continue;
+        chrome.scripting
+          .executeScript({
+            target: { tabId: tab.id, allFrames: true },
+            files: ['content.js'],
+          })
+          .catch(() => {});
+      }
+    });
+  } catch {}
+}
+
+chrome.runtime.onInstalled?.addListener(() => {
+  reinjectContentScriptsIntoOpenTabs();
+});
 
 // Initialize on startup
 Promise.all([loadSettings(), loadHistory()]).then(() => {

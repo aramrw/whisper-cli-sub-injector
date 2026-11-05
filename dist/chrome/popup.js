@@ -6,10 +6,12 @@
     const statusDot = document.getElementById("status-dot");
     const statusText = document.getElementById("status-text");
     const openHistoryBtn = document.getElementById("open-history-btn");
+    const openOptionsBtn = document.getElementById("open-options-btn");
     const autoEmbedToggle = document.getElementById("auto-embed-toggle");
     const refreshVideosBtn = document.getElementById("refresh-videos-btn");
     const videoListContainer = document.getElementById("video-list-container");
     const pauseWithVideoCheckbox = document.getElementById("pause-with-video");
+    const ignoreWhenPausedCheckbox = document.getElementById("ignore-when-paused");
     const fontSizeInput = document.getElementById("font-size");
     const fontSizeVal = document.getElementById("font-size-val");
     const bottomOffsetInput = document.getElementById("bottom-offset");
@@ -25,11 +27,6 @@
     const subNavPlayCheckbox = document.getElementById("sub-nav-play");
     const subNavPaddingInput = document.getElementById("sub-nav-padding");
     const subNavPaddingVal = document.getElementById("sub-nav-padding-val");
-    const subNavCacheCheckbox = document.getElementById("sub-nav-cache");
-    const clearCacheBtn = document.getElementById("clear-cache-btn");
-    const serverUrlInput = document.getElementById("server-url");
-    const connectBtn = document.getElementById("connect-btn");
-    const retryBtn = document.getElementById("retry-btn");
     const testSubBtn = document.getElementById("test-sub-btn");
     function updateStatusUI(connected, enabled) {
       if (!enabled) {
@@ -181,6 +178,7 @@
       enabledToggle.checked = settings.enabled;
       autoEmbedToggle.checked = settings.autoEmbed ?? true;
       pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;
+      ignoreWhenPausedCheckbox.checked = settings.ignoreSubtitlesWhenPaused ?? true;
       fontSizeInput.value = String(settings.fontSize);
       fontSizeVal.textContent = `${settings.fontSize}px`;
       bottomOffsetInput.value = String(settings.bottomOffset);
@@ -196,11 +194,9 @@
       fadeTimeoutVal.textContent = `${fadeSecs}s`;
       subNavEnabledCheckbox.checked = settings.subNavigationEnabled ?? true;
       subNavPlayCheckbox.checked = settings.subNavigationPlayOnSeek ?? true;
-      subNavCacheCheckbox.checked = settings.enableSubtitleCache ?? true;
       const padMs = settings.subNavigationPaddingMs ?? 150;
       subNavPaddingInput.value = String(padMs);
       subNavPaddingVal.textContent = `${padMs}ms`;
-      serverUrlInput.value = settings.serverUrl;
     });
     fetchCurrentStatus();
     fetchDetectedVideos();
@@ -242,6 +238,9 @@
     pauseWithVideoCheckbox.addEventListener("change", () => {
       saveSetting({ pauseSubtitlesWithVideo: pauseWithVideoCheckbox.checked });
     });
+    ignoreWhenPausedCheckbox.addEventListener("change", () => {
+      saveSetting({ ignoreSubtitlesWhenPaused: ignoreWhenPausedCheckbox.checked });
+    });
     fontSizeInput.addEventListener("input", () => {
       fontSizeVal.textContent = `${fontSizeInput.value}px`;
       saveSetting({ fontSize: Number(fontSizeInput.value) });
@@ -277,47 +276,13 @@
       subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
       saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
     });
-    subNavCacheCheckbox.addEventListener("change", () => {
-      saveSetting({ enableSubtitleCache: subNavCacheCheckbox.checked });
-    });
-    clearCacheBtn.addEventListener("click", () => {
-      clearCacheBtn.disabled = true;
-      clearCacheBtn.textContent = "Clearing...";
-      chrome.runtime.sendMessage({ type: "CLEAR_TIMELINE_CACHE" }, () => {
-        clearCacheBtn.textContent = "\u2713 Cache Cleared!";
-        setTimeout(() => {
-          clearCacheBtn.textContent = "\u{1F5D1}\uFE0F Clear Subtitle Cache";
-          clearCacheBtn.disabled = false;
-        }, 1400);
-      });
-    });
-    connectBtn.addEventListener("click", () => {
-      const url = serverUrlInput.value.trim();
-      statusText.textContent = "Connecting...";
-      saveSetting({ serverUrl: url });
-      chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
-        setTimeout(fetchCurrentStatus, 400);
-        setTimeout(fetchCurrentStatus, 1200);
-      });
-    });
-    retryBtn.addEventListener("click", () => {
-      retryBtn.textContent = "...";
-      retryBtn.disabled = true;
-      statusText.textContent = "Retrying connection...";
-      const url = serverUrlInput.value.trim();
-      saveSetting({ serverUrl: url });
-      chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
-        setTimeout(() => {
-          retryBtn.textContent = "Retry";
-          retryBtn.disabled = false;
-          fetchCurrentStatus();
-        }, 500);
-        setTimeout(fetchCurrentStatus, 1200);
-      });
-    });
     openHistoryBtn.addEventListener("click", () => {
       const historyUrl = chrome.runtime.getURL("history.html");
       chrome.tabs.create({ url: historyUrl });
+    });
+    openOptionsBtn.addEventListener("click", () => {
+      const optionsUrl = chrome.runtime.getURL("options.html");
+      chrome.tabs.create({ url: optionsUrl });
     });
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg.type === "SERVER_STATUS") {

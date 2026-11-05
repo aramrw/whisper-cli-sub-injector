@@ -20,32 +20,111 @@ const bindings: Map<HTMLMediaElement, VideoBinding> = new Map();
 let activeVideo: HTMLMediaElement | null = null;
 let selectedVideoId: string | null = null;
 let keepAlivePort: chrome.runtime.Port | null = null;
+let scanIntervalId: ReturnType<typeof setInterval> | null = null;
+let domObserver: MutationObserver | null = null;
+let contextInvalidated = false;
+let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
+let focusHandler: (() => void) | null = null;
+let takeoverHandler: (() => void) | null = null;
 
 let highlightedVideo: HTMLMediaElement | null = null;
 let originalOutline = '';
 let originalBoxShadow = '';
 
+function isExtensionContextValid(): boolean {
+  if (contextInvalidated) return false;
+  try {
+    return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+  } catch {
+    return false;
+  }
+}
+
+function cleanupInvalidatedContext() {
+  if (contextInvalidated) return;
+  contextInvalidated = true;
+
+  if (scanIntervalId) {
+    clearInterval(scanIntervalId);
+    scanIntervalId = null;
+  }
+  if (domObserver) {
+    domObserver.disconnect();
+    domObserver = null;
+  }
+  if (keydownHandler) {
+    window.removeEventListener('keydown', keydownHandler, true);
+    keydownHandler = null;
+  }
+  if (visibilityHandler) {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
+  }
+  if (focusHandler) {
+    window.removeEventListener('focus', focusHandler);
+    focusHandler = null;
+  }
+  if (takeoverHandler) {
+    window.removeEventListener('whisper-cli-sub-instance-takeover', takeoverHandler);
+    takeoverHandler = null;
+  }
+  keepAlivePort = null;
+  clearHighlight();
+
+  for (const binding of bindings.values()) {
+    try {
+      binding.overlay.destroy();
+    } catch {}
+  }
+  bindings.clear();
+  activeVideo = null;
+}
+
 // Load settings from storage
 function initSettings() {
-  chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
-    settings = { ...DEFAULT_SETTINGS, ...(items as ExtensionSettings) };
-    for (const binding of bindings.values()) {
-      binding.overlay.applySettings(settings);
-    }
-  });
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return;
+  }
+  try {
+    chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
+      if (!isExtensionContextValid()) {
+        cleanupInvalidatedContext();
+        return;
+      }
+      settings = { ...DEFAULT_SETTINGS, ...(items as ExtensionSettings) };
+      for (const binding of bindings.values()) {
+        binding.overlay.applySettings(settings);
+      }
+    });
+  } catch {
+    cleanupInvalidatedContext();
+  }
 }
 
 // Establish or revive persistent keep-alive port to background service worker
 function ensureKeepAlive() {
   if (keepAlivePort) return;
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return;
+  }
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'whisper-keepalive' });
     keepAlivePort.onDisconnect.addListener(() => {
       keepAlivePort = null;
-      setTimeout(ensureKeepAlive, 1500);
+      if (isExtensionContextValid()) {
+        setTimeout(ensureKeepAlive, 1500);
+      } else {
+        cleanupInvalidatedContext();
+      }
     });
   } catch {
     keepAlivePort = null;
+    if (!isExtensionContextValid()) {
+      cleanupInvalidatedContext();
+    }
   }
 }
 
@@ -182,6 +261,13 @@ function getDetectedVideosList(): DetectedVideoInfo[] {
 
 // Discovery loop
 function scanVideos() {
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return;
+  }
+  if (!document || (!document.body && !document.documentElement)) {
+    return;
+  }
   const discovered = findAllVideos(document);
 
   // Bind new videos
@@ -233,6 +319,10 @@ function scanVideos() {
 
 // Handle tab activation & visibility changes
 function onTabActivated(cueFromBg?: SubtitleCue | null) {
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return;
+  }
   ensureKeepAlive();
   scanVideos();
   const target = getTargetVideo();
@@ -250,91 +340,108 @@ function onTabActivated(cueFromBg?: SubtitleCue | null) {
   }
 
   // Query background for latest connection status and last cue
-  chrome.runtime.sendMessage({ type: 'TAB_FOCUSED' }, (res) => {
-    if (chrome.runtime.lastError || !res) return;
-    if (res.lastCue && target) {
-      const binding = bindings.get(target);
-      if (binding) {
-        binding.overlay.restoreIfIdle(res.lastCue);
-      }
+  try {
+    const p = chrome.runtime.sendMessage({ type: 'TAB_FOCUSED' });
+    if (p && typeof p.then === 'function') {
+      p.then((res) => {
+        if (!isExtensionContextValid() || !res) return;
+        if (res.lastCue && target) {
+          const binding = bindings.get(target);
+          if (binding) {
+            binding.overlay.restoreIfIdle(res.lastCue);
+          }
+        }
+      }).catch(() => {});
     }
-  });
+  } catch {
+    cleanupInvalidatedContext();
+  }
 }
 
 // Handle messages from background worker or popup
-chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, sendResponse) => {
-  if (message.type === 'NEW_SUBTITLE') {
-    const target = getTargetVideo();
-    if (target) {
-      const binding = bindings.get(target);
-      if (binding) {
-        binding.overlay.showCue(message.cue);
+if (isExtensionContextValid()) {
+  try {
+    chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, sendResponse) => {
+      if (!isExtensionContextValid()) {
+        cleanupInvalidatedContext();
+        return false;
       }
-    }
-  } else if (message.type === 'SETTINGS_CHANGED') {
-    settings = message.settings;
-    for (const binding of bindings.values()) {
-      binding.overlay.applySettings(settings);
-    }
-  } else if (message.type === 'CLEAR_SUBTITLES') {
-    for (const binding of bindings.values()) {
-      binding.overlay.hide();
-    }
-  } else if (message.type === 'CLEAR_TIMELINE_CACHE') {
-    for (const binding of bindings.values()) {
-      binding.overlay.clearTimelineCache();
-    }
-  } else if (message.type === 'GET_DETECTED_VIDEOS') {
-    sendResponse({
-      videos: getDetectedVideosList(),
-      autoEmbed: settings.autoEmbed ?? true,
-      selectedVideoId,
+      if (message.type === 'NEW_SUBTITLE') {
+        const target = getTargetVideo();
+        if (target) {
+          const binding = bindings.get(target);
+          if (binding) {
+            binding.overlay.showCue(message.cue);
+          }
+        }
+      } else if (message.type === 'SETTINGS_CHANGED') {
+        settings = message.settings;
+        for (const binding of bindings.values()) {
+          binding.overlay.applySettings(settings);
+        }
+      } else if (message.type === 'CLEAR_SUBTITLES') {
+        for (const binding of bindings.values()) {
+          binding.overlay.hide();
+        }
+      } else if (message.type === 'CLEAR_TIMELINE_CACHE') {
+        for (const binding of bindings.values()) {
+          binding.overlay.clearTimelineCache();
+        }
+      } else if (message.type === 'GET_DETECTED_VIDEOS') {
+        sendResponse({
+          videos: getDetectedVideosList(),
+          autoEmbed: settings.autoEmbed ?? true,
+          selectedVideoId,
+        });
+        return true;
+      } else if (message.type === 'SELECT_VIDEO') {
+        selectedVideoId = message.videoId;
+        settings.autoEmbed = false;
+        for (const binding of bindings.values()) {
+          if (binding.id === message.videoId) {
+            activeVideo = binding.video;
+            binding.overlay.updatePosition();
+          } else {
+            binding.overlay.hide();
+          }
+        }
+        sendResponse({ success: true, activeVideoId: selectedVideoId });
+        return true;
+      } else if (message.type === 'SET_AUTO_EMBED') {
+        settings.autoEmbed = message.autoEmbed;
+        if (message.autoEmbed) {
+          selectedVideoId = null;
+          activeVideo = getTargetVideo();
+        }
+        sendResponse({ success: true });
+        return true;
+      } else if (message.type === 'HIGHLIGHT_VIDEO') {
+        for (const binding of bindings.values()) {
+          if (binding.id === message.videoId) {
+            highlightVideo(binding.video);
+            break;
+          }
+        }
+        sendResponse({ success: true });
+        return true;
+      } else if (message.type === 'UNHIGHLIGHT_VIDEO') {
+        clearHighlight();
+        sendResponse({ success: true });
+        return true;
+      } else if (message.type === 'TAB_ACTIVATED') {
+        if (message.settings) {
+          settings = message.settings;
+          for (const binding of bindings.values()) {
+            binding.overlay.applySettings(settings);
+          }
+        }
+        onTabActivated(message.lastCue);
+      }
     });
-    return true;
-  } else if (message.type === 'SELECT_VIDEO') {
-    selectedVideoId = message.videoId;
-    settings.autoEmbed = false;
-    for (const binding of bindings.values()) {
-      if (binding.id === message.videoId) {
-        activeVideo = binding.video;
-        binding.overlay.updatePosition();
-      } else {
-        binding.overlay.hide();
-      }
-    }
-    sendResponse({ success: true, activeVideoId: selectedVideoId });
-    return true;
-  } else if (message.type === 'SET_AUTO_EMBED') {
-    settings.autoEmbed = message.autoEmbed;
-    if (message.autoEmbed) {
-      selectedVideoId = null;
-      activeVideo = getTargetVideo();
-    }
-    sendResponse({ success: true });
-    return true;
-  } else if (message.type === 'HIGHLIGHT_VIDEO') {
-    for (const binding of bindings.values()) {
-      if (binding.id === message.videoId) {
-        highlightVideo(binding.video);
-        break;
-      }
-    }
-    sendResponse({ success: true });
-    return true;
-  } else if (message.type === 'UNHIGHLIGHT_VIDEO') {
-    clearHighlight();
-    sendResponse({ success: true });
-    return true;
-  } else if (message.type === 'TAB_ACTIVATED') {
-    if (message.settings) {
-      settings = message.settings;
-      for (const binding of bindings.values()) {
-        binding.overlay.applySettings(settings);
-      }
-    }
-    onTabActivated(message.lastCue);
+  } catch {
+    cleanupInvalidatedContext();
   }
-});
+}
 
 // Helper to ignore keystrokes when typing in inputs/textareas
 function isEditableElement(el: EventTarget | null): boolean {
@@ -345,62 +452,108 @@ function isEditableElement(el: EventTarget | null): boolean {
   );
 }
 
-// Global key listener for smart subtitle replay (asbplayer style Left Arrow)
+// Global key listener for smart subtitle replay (Left/Right Arrow) and Re-record Line (Alt+R / Option+R)
 function setupKeyNavigation() {
-  window.addEventListener(
-    'keydown',
-    (e: KeyboardEvent) => {
-      if (e.key !== 'ArrowLeft') return;
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      if (isEditableElement(e.target)) return;
-      if (!settings.enabled || !settings.subNavigationEnabled) return;
+  if (keydownHandler) {
+    window.removeEventListener('keydown', keydownHandler, true);
+  }
+  keydownHandler = (e: KeyboardEvent) => {
+    if (!isExtensionContextValid()) {
+      cleanupInvalidatedContext();
+      return;
+    }
+    if (isEditableElement(e.target)) return;
+    if (!settings.enabled) return;
 
+    // Alt+R / Option+R: Re-record current subtitle line
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
       const target = getTargetVideo();
       if (!target) return;
-
       const binding = bindings.get(target);
       if (!binding) return;
-
-      const handled = binding.overlay.seekToPreviousSubtitle();
+      const handled = binding.overlay.rerecordCurrentSubtitle();
       if (handled) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
       }
-    },
-    true // Capture phase: intercepts before Crunchyroll / video player default seek
-  );
+      return;
+    }
+
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!settings.subNavigationEnabled) return;
+
+    const target = getTargetVideo();
+    if (!target) return;
+
+    const binding = bindings.get(target);
+    if (!binding) return;
+
+    const handled =
+      e.key === 'ArrowLeft'
+        ? binding.overlay.seekToPreviousSubtitle()
+        : binding.overlay.seekToNextSubtitle();
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }
+  };
+  window.addEventListener('keydown', keydownHandler, true);
 }
 
 // Setup continuous discovery
 function start() {
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return;
+  }
+
+  // Tell any orphaned content script instance in this frame to tear down immediately
+  try {
+    window.dispatchEvent(new CustomEvent('whisper-cli-sub-instance-takeover'));
+  } catch {}
+
+  takeoverHandler = () => {
+    cleanupInvalidatedContext();
+  };
+  window.addEventListener('whisper-cli-sub-instance-takeover', takeoverHandler);
+
   initSettings();
   ensureKeepAlive();
   scanVideos();
   setupKeyNavigation();
 
   // Periodic poll to catch SPAs & dynamic video changes
-  setInterval(scanVideos, 1000);
+  scanIntervalId = setInterval(scanVideos, 1000);
 
   // MutationObserver for instant detection when new nodes appear
-  const observer = new MutationObserver(() => {
-    scanVideos();
-  });
-  observer.observe(document.body || document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+  const observeRoot = document.body || document.documentElement;
+  if (observeRoot) {
+    domObserver = new MutationObserver(() => {
+      scanVideos();
+    });
+    domObserver.observe(observeRoot, {
+      childList: true,
+      subtree: true,
+    });
+  }
 
   // Re-sync on visibility change (switching tabs back) and focus
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
+  visibilityHandler = () => {
+    if (!document.hidden && isExtensionContextValid()) {
       onTabActivated();
     }
-  });
+  };
+  document.addEventListener('visibilitychange', visibilityHandler);
 
-  window.addEventListener('focus', () => {
-    onTabActivated();
-  });
+  focusHandler = () => {
+    if (isExtensionContextValid()) {
+      onTabActivated();
+    }
+  };
+  window.addEventListener('focus', focusHandler);
 }
 
 if (document.readyState === 'loading') {

@@ -22,6 +22,7 @@
     const exportSrt = document.getElementById("export-srt");
     const exportJson = document.getElementById("export-json");
     const clearHistoryBtn = document.getElementById("clear-history-btn");
+    const openOptionsBtn = document.getElementById("open-options-btn");
     const subtitleList = document.getElementById("subtitle-list");
     const emptyState = document.getElementById("empty-state");
     const footerStats = document.getElementById("footer-stats");
@@ -33,11 +34,21 @@
       const d = new Date(timestamp);
       return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
     }
+    function formatVideoTimeSpan(startSec, endSec) {
+      if (startSec === void 0 || endSec === void 0) return "";
+      const fmt = (sec) => {
+        const m = Math.floor(sec / 60);
+        const s = (sec % 60).toFixed(1).padStart(4, "0");
+        return `${String(m).padStart(2, "0")}:${s}`;
+      };
+      return `\u{1F3AC} ${fmt(startSec)} \u2192 ${fmt(endSec)}`;
+    }
     function formatSrtTime(ms) {
-      const hours = Math.floor(ms / (1e3 * 60 * 60));
-      const minutes = Math.floor(ms % (1e3 * 60 * 60) / (1e3 * 60));
-      const seconds = Math.floor(ms % (1e3 * 60) / 1e3);
-      const millis = ms % 1e3;
+      const clamped = Math.max(0, Math.round(ms));
+      const hours = Math.floor(clamped / (1e3 * 60 * 60));
+      const minutes = Math.floor(clamped % (1e3 * 60 * 60) / (1e3 * 60));
+      const seconds = Math.floor(clamped % (1e3 * 60) / 1e3);
+      const millis = clamped % 1e3;
       return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
     }
     function updateStatus(connected) {
@@ -78,6 +89,15 @@
       timeSpan.title = new Date(entry.receivedAt).toLocaleString();
       meta.appendChild(indexSpan);
       meta.appendChild(timeSpan);
+      const videoSpan = document.createElement("span");
+      videoSpan.className = "cue-video-time";
+      const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
+      videoSpan.textContent = videoLabel;
+      videoSpan.style.display = videoLabel ? "inline-block" : "none";
+      if (entry.videoTitle) {
+        videoSpan.title = entry.videoTitle;
+      }
+      meta.appendChild(videoSpan);
       const textWrapper = document.createElement("div");
       textWrapper.className = "cue-text-wrapper";
       textWrapper.innerHTML = highlightMatches(entry.text, query);
@@ -146,7 +166,16 @@
         footerStats.textContent = `Showing ${subtitleList.children.length} of ${allEntries.length} subtitles`;
       }
     }
-    function updateLastEntry(entry) {
+    function updateLastEntry(entry, fullRefresh) {
+      if (fullRefresh || !entry) {
+        chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
+          if (res?.history) {
+            allEntries = res.history;
+            renderList();
+          }
+        });
+        return;
+      }
       if (allEntries.length === 0) {
         appendSingleEntry(entry);
         return;
@@ -157,7 +186,7 @@
       const q = currentFilter.trim().toLowerCase();
       const rows = subtitleList.querySelectorAll(".subtitle-row");
       const targetRow = rows[targetIdx];
-      if (targetRow) {
+      if (targetRow && !q) {
         const textWrapper = targetRow.querySelector(".cue-text-wrapper");
         if (textWrapper) {
           textWrapper.innerHTML = highlightMatches(entry.text, q);
@@ -165,6 +194,12 @@
         const timeSpan = targetRow.querySelector(".cue-time");
         if (timeSpan) {
           timeSpan.textContent = formatTime(entry.receivedAt);
+        }
+        const videoSpan = targetRow.querySelector(".cue-video-time");
+        if (videoSpan) {
+          const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
+          videoSpan.textContent = videoLabel;
+          videoSpan.style.display = videoLabel ? "inline-block" : "none";
         }
       } else {
         renderList();
@@ -274,14 +309,35 @@
     });
     exportSrt.addEventListener("click", () => {
       if (allEntries.length === 0) return;
-      let srt = "";
       const baseTime = allEntries[0].receivedAt;
-      allEntries.forEach((entry, i) => {
+      const hasVideoTimings = allEntries.some(
+        (e) => e.videoStartTime !== void 0 && e.videoEndTime !== void 0
+      );
+      const srtItems = allEntries.map((entry) => {
+        if (entry.videoStartTime !== void 0 && entry.videoEndTime !== void 0) {
+          const startMs2 = Math.max(0, Math.round(entry.videoStartTime * 1e3));
+          const endMs2 = Math.max(startMs2 + 200, Math.round(entry.videoEndTime * 1e3));
+          return { startMs: startMs2, endMs: endMs2, text: entry.text.trim(), isVideoTimed: true };
+        }
+        const durMs = entry.durationMs && entry.durationMs > 0 ? entry.durationMs : 2500;
         const startMs = Math.max(0, entry.receivedAt - baseTime);
-        const endMs = startMs + 4e3;
+        const endMs = startMs + durMs;
+        return { startMs, endMs, text: entry.text.trim(), isVideoTimed: false };
+      });
+      const ordered = hasVideoTimings ? srtItems.filter((item) => item.text.length > 0).sort((a, b) => a.startMs - b.startMs) : srtItems.filter((item) => item.text.length > 0);
+      for (let i = 0; i + 1 < ordered.length; i++) {
+        if (ordered[i].endMs > ordered[i + 1].startMs) {
+          ordered[i].endMs = Math.max(
+            ordered[i].startMs + 150,
+            ordered[i + 1].startMs - 20
+          );
+        }
+      }
+      let srt = "";
+      ordered.forEach((item, i) => {
         srt += `${i + 1}
-${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}
-${entry.text}
+${formatSrtTime(item.startMs)} --> ${formatSrtTime(item.endMs)}
+${item.text}
 
 `;
       });
@@ -294,11 +350,16 @@ ${entry.text}
       const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
       downloadFile(jsonStr, `whisper-subtitles-${dateStr}.json`, "application/json;charset=utf-8");
     });
+    if (openOptionsBtn) {
+      openOptionsBtn.addEventListener("click", () => {
+        chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+      });
+    }
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg.type === "NEW_HISTORY_ENTRY") {
         appendSingleEntry(msg.entry);
       } else if (msg.type === "UPDATE_HISTORY_ENTRY") {
-        updateLastEntry(msg.entry);
+        updateLastEntry(msg.entry, msg.fullRefresh);
       } else if (msg.type === "SERVER_STATUS") {
         updateStatus(msg.connected);
       } else if (msg.type === "HISTORY_CLEARED") {

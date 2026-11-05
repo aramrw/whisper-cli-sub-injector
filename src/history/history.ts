@@ -24,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const exportJson = document.getElementById('export-json') as HTMLButtonElement;
 
   const clearHistoryBtn = document.getElementById('clear-history-btn') as HTMLButtonElement;
+  const openOptionsBtn = document.getElementById('open-options-btn') as HTMLButtonElement | null;
 
   const subtitleList = document.getElementById('subtitle-list') as HTMLDivElement;
   const emptyState = document.getElementById('empty-state') as HTMLDivElement;
@@ -39,11 +40,22 @@ document.addEventListener('DOMContentLoaded', () => {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   }
 
+  function formatVideoTimeSpan(startSec?: number, endSec?: number): string {
+    if (startSec === undefined || endSec === undefined) return '';
+    const fmt = (sec: number) => {
+      const m = Math.floor(sec / 60);
+      const s = (sec % 60).toFixed(1).padStart(4, '0');
+      return `${String(m).padStart(2, '0')}:${s}`;
+    };
+    return `🎬 ${fmt(startSec)} → ${fmt(endSec)}`;
+  }
+
   function formatSrtTime(ms: number): string {
-    const hours = Math.floor(ms / (1000 * 60 * 60));
-    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((ms % (1000 * 60)) / 1000);
-    const millis = ms % 1000;
+    const clamped = Math.max(0, Math.round(ms));
+    const hours = Math.floor(clamped / (1000 * 60 * 60));
+    const minutes = Math.floor((clamped % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((clamped % (1000 * 60)) / 1000);
+    const millis = clamped % 1000;
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
   }
 
@@ -94,6 +106,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     meta.appendChild(indexSpan);
     meta.appendChild(timeSpan);
+
+    const videoSpan = document.createElement('span');
+    videoSpan.className = 'cue-video-time';
+    const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
+    videoSpan.textContent = videoLabel;
+    videoSpan.style.display = videoLabel ? 'inline-block' : 'none';
+    if (entry.videoTitle) {
+      videoSpan.title = entry.videoTitle;
+    }
+    meta.appendChild(videoSpan);
 
     const textWrapper = document.createElement('div');
     textWrapper.className = 'cue-text-wrapper';
@@ -184,7 +206,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function updateLastEntry(entry: SubtitleHistoryEntry) {
+  function updateLastEntry(entry?: SubtitleHistoryEntry, fullRefresh?: boolean) {
+    if (fullRefresh || !entry) {
+      chrome.runtime.sendMessage({ type: 'GET_HISTORY' }, (res) => {
+        if (res?.history) {
+          allEntries = res.history;
+          renderList();
+        }
+      });
+      return;
+    }
+
     if (allEntries.length === 0) {
       appendSingleEntry(entry);
       return;
@@ -198,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = subtitleList.querySelectorAll('.subtitle-row');
     const targetRow = rows[targetIdx] as HTMLElement | undefined;
 
-    if (targetRow) {
+    if (targetRow && !q) {
       const textWrapper = targetRow.querySelector('.cue-text-wrapper');
       if (textWrapper) {
         textWrapper.innerHTML = highlightMatches(entry.text, q);
@@ -206,6 +238,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const timeSpan = targetRow.querySelector('.cue-time') as HTMLElement | null;
       if (timeSpan) {
         timeSpan.textContent = formatTime(entry.receivedAt);
+      }
+      const videoSpan = targetRow.querySelector('.cue-video-time') as HTMLElement | null;
+      if (videoSpan) {
+        const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
+        videoSpan.textContent = videoLabel;
+        videoSpan.style.display = videoLabel ? 'inline-block' : 'none';
       }
     } else {
       renderList();
@@ -337,13 +375,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
   exportSrt.addEventListener('click', () => {
     if (allEntries.length === 0) return;
-    let srt = '';
-    const baseTime = allEntries[0].receivedAt;
 
-    allEntries.forEach((entry, i) => {
+    const baseTime = allEntries[0].receivedAt;
+    const hasVideoTimings = allEntries.some(
+      (e) => e.videoStartTime !== undefined && e.videoEndTime !== undefined
+    );
+
+    const srtItems = allEntries.map((entry) => {
+      if (entry.videoStartTime !== undefined && entry.videoEndTime !== undefined) {
+        const startMs = Math.max(0, Math.round(entry.videoStartTime * 1000));
+        const endMs = Math.max(startMs + 200, Math.round(entry.videoEndTime * 1000));
+        return { startMs, endMs, text: entry.text.trim(), isVideoTimed: true };
+      }
+      const durMs = entry.durationMs && entry.durationMs > 0 ? entry.durationMs : 2500;
       const startMs = Math.max(0, entry.receivedAt - baseTime);
-      const endMs = startMs + 4000;
-      srt += `${i + 1}\n${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}\n${entry.text}\n\n`;
+      const endMs = startMs + durMs;
+      return { startMs, endMs, text: entry.text.trim(), isVideoTimed: false };
+    });
+
+    // If subtitles were captured from a video timeline, sort by video timestamp and ensure clean non-overlapping cues
+    const ordered = hasVideoTimings
+      ? srtItems
+          .filter((item) => item.text.length > 0)
+          .sort((a, b) => a.startMs - b.startMs)
+      : srtItems.filter((item) => item.text.length > 0);
+
+    for (let i = 0; i + 1 < ordered.length; i++) {
+      if (ordered[i].endMs > ordered[i + 1].startMs) {
+        ordered[i].endMs = Math.max(
+          ordered[i].startMs + 150,
+          ordered[i + 1].startMs - 20
+        );
+      }
+    }
+
+    let srt = '';
+    ordered.forEach((item, i) => {
+      srt += `${i + 1}\n${formatSrtTime(item.startMs)} --> ${formatSrtTime(item.endMs)}\n${item.text}\n\n`;
     });
 
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -357,12 +425,18 @@ document.addEventListener('DOMContentLoaded', () => {
     downloadFile(jsonStr, `whisper-subtitles-${dateStr}.json`, 'application/json;charset=utf-8');
   });
 
+  if (openOptionsBtn) {
+    openOptionsBtn.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
+    });
+  }
+
   // Listen for real-time broadcasts
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'NEW_HISTORY_ENTRY') {
       appendSingleEntry(msg.entry);
     } else if (msg.type === 'UPDATE_HISTORY_ENTRY') {
-      updateLastEntry(msg.entry);
+      updateLastEntry(msg.entry, msg.fullRefresh);
     } else if (msg.type === 'SERVER_STATUS') {
       updateStatus(msg.connected);
     } else if (msg.type === 'HISTORY_CLEARED') {

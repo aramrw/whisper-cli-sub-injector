@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper Subtitles — Options & Timing Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Header -->
+    <header class="top-nav">
+      <div class="brand">
+        <span class="brand-icon">⚙️</span>
+        <div class="brand-text">
+          <h1>Whisper Live Subtitles</h1>
+          <span class="brand-subtitle">Advanced Options, Timing & Subtitle Builder</span>
+        </div>
+      </div>
+
+      <div class="nav-status-group">
+        <div class="save-toast" id="save-toast">✓ Saved</div>
+        <div class="status-badge" id="status-badge">
+          <span class="status-dot disconnected" id="status-dot"></span>
+          <span class="status-text" id="status-text">Connecting...</span>
+        </div>
+        <button id="open-history-btn" class="btn btn-secondary">
+          <span>📜 Subtitle History</span>
+          <span>↗</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Settings Content -->
+    <main class="options-content">
+      <div class="options-grid">
+
+        <!-- 1. Subtitle Timing & On-the-Fly SRT Builder -->
+        <section class="settings-card">
+          <div class="card-header">
+            <span class="card-icon">⏱️</span>
+            <div>
+              <h2>Clip Timing & On-the-Fly Subtitle Builder</h2>
+              <p>Control how incoming audio bytes from whisper-cli are mapped onto the video timeline and exported to .srt</p>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="exact-byte-timing" class="setting-title">Exact Byte-Level Clip Timing</label>
+              <span class="setting-desc">
+                Use whisper-cli's exact first-byte (<code>clipStartMs</code>) and last-byte (<code>clipEndMs</code>) audio timestamps and finalization lag instead of guessing duration from character count. Locks start time on the first spoken syllable even if started mid-sentence.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="exact-byte-timing" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="split-multi-sentence" class="setting-title">Split Rapid Multi-Sentence Dialogue into Individual Cues</label>
+              <span class="setting-desc">
+                Cut subtitles at each sentence boundary (<code>.</code>, <code>!</code>, <code>?</code>, <code>。</code>, <code>！</code>, <code>？</code>) so rapid back-to-back dialogue or arguments without pauses become separate scrubbable sentences instead of one long block.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="split-multi-sentence" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="enable-sub-cache" class="setting-title">Cache Subtitle Timestamps on Video Timeline</label>
+              <span class="setting-desc">
+                Build an in-memory timeline of every subtitle's exact video start and end timestamps as you watch for instant replay seeking and properly timed episode <code>.srt</code> exports.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="enable-sub-cache" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="cement-subtitles" class="setting-title">Cement Finalized Subtitles into Timeline</label>
+              <span class="setting-desc">
+                Lock finalized subtitle lines onto the video timeline so scrubbing back and forth replays your existing subtitles right as the line starts without re-transcribing or duplicating them.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cement-subtitles" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="show-rerecord-btn" class="setting-title">Show "Re-record Line" Button When Paused (<code>Alt+R</code>)</label>
+              <span class="setting-desc">
+                Display a floating <strong>🔄 Re-record Line</strong> button when the video is paused (or press <code>Alt+R</code>) to uncement that specific line, rewind to its start, and re-capture it cleanly.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="show-rerecord-btn" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="show-prev-btn" class="setting-title">Show "⏮ Prev" Button When Paused</label>
+              <span class="setting-desc">
+                Display a floating <strong>⏮ Prev</strong> button above the subtitle when the video is paused and an earlier subtitle exists on the timeline.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="show-prev-btn" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="show-next-btn" class="setting-title">Show "Next ⏭" Button When Paused</label>
+              <span class="setting-desc">
+                Display a floating <strong>Next ⏭</strong> button above the subtitle when the video is paused and a cemented subtitle exists ahead of you on the timeline.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="show-next-btn" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="auto-heal-overlaps" class="setting-title">Auto-Heal Overlapping Cues on Rewind</label>
+              <span class="setting-desc">
+                When you rewind or replay a line (or resume after pausing mid-sentence), automatically merge or replace the overlapping fragment on the video timeline so your final <code>.srt</code> file has clean, non-overlapping subtitles.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="auto-heal-overlaps">
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="srt-start-padding" class="setting-title">
+                Clip Start Lead-In Padding: <span class="val-pill" id="srt-start-padding-val">50ms</span>
+              </label>
+              <span class="setting-desc">
+                Extra lead-in padding subtracted before the first detected audio byte when stamping subtitle start time.
+              </span>
+            </div>
+            <input type="range" id="srt-start-padding" min="0" max="500" step="10" value="50" class="range-input">
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="srt-end-padding" class="setting-title">
+                Clip End Trail-Out Padding: <span class="val-pill" id="srt-end-padding-val">100ms</span>
+              </label>
+              <span class="setting-desc">
+                Extra trail-out padding added after the last detected audio byte when stamping subtitle end time.
+              </span>
+            </div>
+            <input type="range" id="srt-end-padding" min="0" max="500" step="10" value="100" class="range-input">
+          </div>
+
+          <div class="card-actions">
+            <button id="clear-cache-btn" class="btn btn-secondary">
+              🗑️ Clear Video Timeline Cache
+            </button>
+          </div>
+        </section>
+
+        <!-- 2. Video Playback & External Audio Filtering -->
+        <section class="settings-card">
+          <div class="card-header">
+            <span class="card-icon">🎬</span>
+            <div>
+              <h2>Video Playback & External Audio Filtering</h2>
+              <p>Prevent Anki card audio, Yomitan lookups, or other tabs from interfering when your video is paused</p>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="ignore-when-paused" class="setting-title">Stop / Ignore New Subtitles When Video is Paused</label>
+              <span class="setting-desc">
+                Ignore any new system audio transcribed while the target video is paused (such as Anki card audio or word repetitions) so it never overwrites the paused subtitle on screen or pollutes your episode's <code>.srt</code> history.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="ignore-when-paused" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="pause-with-video" class="setting-title">Freeze Active Subtitle When Video Pauses</label>
+              <span class="setting-desc">
+                Keep the currently displayed subtitle frozen on screen for as long as the video is paused so you can highlight words or mine sentences without it fading out.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="pause-with-video" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="auto-embed" class="setting-title">Auto-Embed Subtitles on Active Video</label>
+              <span class="setting-desc">
+                Automatically detect and attach the subtitle overlay to the largest / currently playing HTML5 video element on the page.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="auto-embed" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+        </section>
+
+        <!-- 3. Smart Replay (asbplayer style) -->
+        <section class="settings-card">
+          <div class="card-header">
+            <span class="card-icon">⏪</span>
+            <div>
+              <h2>Smart Replay Navigation (asbplayer Style)</h2>
+              <p>Instant keyboard seeking to the exact beginning of spoken lines</p>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="sub-nav-enabled" class="setting-title">Smart Replay on Left Arrow (←)</label>
+              <span class="setting-desc">
+                Intercept the Left Arrow key on video players to jump directly to the start of the current or previous subtitle instead of the player's default 5s/10s jump.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="sub-nav-enabled" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="sub-forward-nav-enabled" class="setting-title">Smart Forward on Right Arrow (→)</label>
+              <span class="setting-desc">
+                When you've rewound and a cemented subtitle exists ahead of you on the timeline, press Right Arrow (→) to jump directly to the next subtitle (falls back to normal player fast-forward when caught up).
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="sub-forward-nav-enabled" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="sub-nav-play" class="setting-title">Auto-Play Video on Replay Seek</label>
+              <span class="setting-desc">
+                If the video is paused when you press Left Arrow (←), automatically start playback from the beginning of the subtitle.
+              </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="sub-nav-play" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="sub-nav-padding" class="setting-title">
+                Replay Seek Padding: <span class="val-pill" id="sub-nav-padding-val">150ms</span>
+              </label>
+              <span class="setting-desc">
+                How many milliseconds before the subtitle's start timestamp to land when seeking with Left Arrow (←).
+              </span>
+            </div>
+            <input type="range" id="sub-nav-padding" min="0" max="500" step="25" value="150" class="range-input">
+          </div>
+        </section>
+
+        <!-- 4. Overlay Appearance & Styling -->
+        <section class="settings-card">
+          <div class="card-header">
+            <span class="card-icon">🎨</span>
+            <div>
+              <h2>Overlay Appearance & Styling</h2>
+              <p>Customize font size, positioning, rolling stack lines, and fade timing</p>
+            </div>
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="font-size" class="setting-title">
+                Font Size: <span class="val-pill" id="font-size-val">28px</span>
+              </label>
+              <span class="setting-desc">Size of subtitle text overlaid on the video player.</span>
+            </div>
+            <input type="range" id="font-size" min="16" max="52" value="28" class="range-input">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="alignment" class="setting-title">Vertical Alignment</label>
+              <span class="setting-desc">Anchor subtitles near the bottom or top edge of the video.</span>
+            </div>
+            <select id="alignment" class="styled-select">
+              <option value="bottom">Bottom of Video</option>
+              <option value="top">Top of Video</option>
+            </select>
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="bottom-offset" class="setting-title">
+                Bottom Offset: <span class="val-pill" id="bottom-offset-val">60px</span>
+              </label>
+              <span class="setting-desc">Distance from the bottom edge of the video when aligned to bottom.</span>
+            </div>
+            <input type="range" id="bottom-offset" min="10" max="250" value="60" class="range-input">
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="top-offset" class="setting-title">
+                Top Offset: <span class="val-pill" id="top-offset-val">40px</span>
+              </label>
+              <span class="setting-desc">Distance from the top edge of the video when aligned to top.</span>
+            </div>
+            <input type="range" id="top-offset" min="10" max="250" value="40" class="range-input">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="bg-box" class="setting-title">Show Semi-Transparent Background Box</label>
+              <span class="setting-desc">Render a dark rounded backdrop behind subtitle text for high contrast.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="bg-box" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="stack-mode" class="setting-title">Rolling Stack Mode (Fade Older Lines)</label>
+              <span class="setting-desc">Stack recent subtitle lines above the active line with subtle dimming.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="stack-mode" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="max-lines" class="setting-title">
+                Max Stack Lines: <span class="val-pill" id="max-lines-val">3</span>
+              </label>
+              <span class="setting-desc">Maximum number of simultaneous lines shown in Rolling Stack mode.</span>
+            </div>
+            <input type="range" id="max-lines" min="1" max="5" value="3" class="range-input">
+          </div>
+
+          <div class="setting-row slider-row">
+            <div class="setting-info">
+              <label for="fade-timeout" class="setting-title">
+                Auto-Fade Delay: <span class="val-pill" id="fade-timeout-val">6s</span>
+              </label>
+              <span class="setting-desc">How long subtitles remain visible after speech stops.</span>
+            </div>
+            <input type="range" id="fade-timeout" min="2" max="15" value="6" class="range-input">
+          </div>
+        </section>
+
+        <!-- 5. Server Connection & History Retention -->
+        <section class="settings-card full-width-card">
+          <div class="card-header">
+            <span class="card-icon">🔌</span>
+            <div>
+              <h2>Server Connection & History Storage</h2>
+              <p>Configure the local whisper-cli SSE stream endpoint and subtitle archive limits</p>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="server-url" class="setting-title">whisper-cli SSE Endpoint URL</label>
+              <span class="setting-desc">Default local server started by <code>whisper --live --apple</code> is <code>http://127.0.0.1:8989</code>.</span>
+            </div>
+            <div class="server-controls">
+              <input type="text" id="server-url" class="text-input" value="http://127.0.0.1:8989" placeholder="http://127.0.0.1:8989">
+              <button id="connect-btn" class="btn btn-primary">Connect</button>
+              <button id="retry-btn" class="btn btn-secondary">Retry</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="retention-duration" class="setting-title">History Retention Duration</label>
+              <span class="setting-desc">How long transcribed subtitles are kept in local storage before automatic pruning.</span>
+            </div>
+            <select id="retention-duration" class="styled-select">
+              <option value="1h">1 Hour</option>
+              <option value="6h">6 Hours</option>
+              <option value="24h" selected>24 Hours (1 Day)</option>
+              <option value="7d">7 Days</option>
+              <option value="30d">30 Days</option>
+              <option value="forever">Forever (No time limit)</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="max-entries" class="setting-title">Max Saved History Lines</label>
+              <span class="setting-desc">Maximum number of subtitle cues stored in history for .srt / .txt export.</span>
+            </div>
+            <select id="max-entries" class="styled-select">
+              <option value="200">200 entries</option>
+              <option value="500">500 entries</option>
+              <option value="1000" selected>1,000 entries</option>
+              <option value="5000">5,000 entries</option>
+              <option value="10000">10,000 entries</option>
+            </select>
+          </div>
+
+          <div class="card-actions split-actions">
+            <button id="reset-defaults-btn" class="btn btn-danger">
+              ↺ Reset All Settings to Defaults
+            </button>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <footer class="options-footer">
+      <span>Whisper Live Subtitles • Real-time video subtitle injector & .srt builder</span>
+      <span>Changes are saved and applied to open video tabs automatically</span>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

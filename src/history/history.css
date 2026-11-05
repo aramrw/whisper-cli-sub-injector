@@ -353,6 +353,18 @@ body {
   font-family: monospace;
 }
 
+.cue-video-time {
+  font-size: 10px;
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: monospace;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
 .cue-text-wrapper {
   flex: 1;
   font-size: 15px;

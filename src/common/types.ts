@@ -3,6 +3,8 @@ export interface SubtitleCue {
   text: string;
   timestamp?: string;
   receivedAt: number;
+  clipStartMs?: number;
+  clipEndMs?: number;
   durationMs?: number;
   lagMs?: number;
   isFinal?: boolean;
@@ -13,6 +15,10 @@ export interface SubtitleHistoryEntry {
   text: string;
   timestamp?: string;
   receivedAt: number;
+  durationMs?: number;
+  videoStartTime?: number; // in video.currentTime seconds
+  videoEndTime?: number;   // in video.currentTime seconds
+  videoTitle?: string;
   isFinal?: boolean;
 }
 
@@ -75,10 +81,21 @@ export interface ExtensionSettings {
   maxLines: number;
   stackMode: boolean;
   pauseSubtitlesWithVideo: boolean;
+  ignoreSubtitlesWhenPaused: boolean;
   subNavigationEnabled: boolean;
+  subForwardNavigationEnabled: boolean;
   subNavigationPlayOnSeek: boolean;
   subNavigationPaddingMs: number;
   enableSubtitleCache: boolean;
+  exactByteTiming: boolean;
+  splitMultiSentenceCues: boolean;
+  autoHealTimelineOverlaps: boolean;
+  cementSubtitlesInTimeline: boolean;
+  showRerecordButton: boolean;
+  showPrevButton: boolean;
+  showNextButton: boolean;
+  srtStartPaddingMs: number;
+  srtEndPaddingMs: number;
   autoEmbed: boolean;
 }
 
@@ -97,10 +114,21 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   maxLines: 3,
   stackMode: true,
   pauseSubtitlesWithVideo: true,
+  ignoreSubtitlesWhenPaused: true,
   subNavigationEnabled: true,
+  subForwardNavigationEnabled: true,
   subNavigationPlayOnSeek: true,
   subNavigationPaddingMs: 150,
   enableSubtitleCache: true,
+  exactByteTiming: true,
+  splitMultiSentenceCues: true,
+  autoHealTimelineOverlaps: false,
+  cementSubtitlesInTimeline: true,
+  showRerecordButton: true,
+  showPrevButton: true,
+  showNextButton: true,
+  srtStartPaddingMs: 50,
+  srtEndPaddingMs: 100,
   autoEmbed: true,
 };
 
@@ -128,7 +156,18 @@ export type MessageToBackground =
   | { type: 'GET_HISTORY_SETTINGS' }
   | { type: 'UPDATE_HISTORY_SETTINGS'; settings: Partial<HistorySettings> }
   | { type: 'CLEAR_HISTORY' }
-  | { type: 'CLEAR_TIMELINE_CACHE' };
+  | { type: 'CLEAR_TIMELINE_CACHE' }
+  | {
+      type: 'SYNC_VIDEO_CUE_TIMING';
+      cueId: string;
+      replacedCueId?: string;
+      text: string;
+      videoStartTime: number;
+      videoEndTime: number;
+      videoTitle?: string;
+      isFinal?: boolean;
+    }
+  | { type: 'DROP_PAUSED_HISTORY_CUE'; cueId: string; forceDelete?: boolean };
 
 export type BroadcastMessage =
   | MessageToContent
