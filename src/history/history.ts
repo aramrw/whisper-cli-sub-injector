@@ -1,9 +1,18 @@
 import {
-  DEFAULT_HISTORY_SETTINGS,
   HistoryRetentionDuration,
   HistorySettings,
   SubtitleHistoryEntry,
 } from '../common/types';
+import {
+  exportAsJson,
+  exportAsSrt,
+  exportAsTxt,
+} from './export';
+import {
+  createEntryElement,
+  formatVideoTimeSpan,
+  highlightMatches,
+} from './render';
 
 document.addEventListener('DOMContentLoaded', () => {
   const statusDot = document.getElementById('status-dot') as HTMLSpanElement;
@@ -35,138 +44,33 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentFilter = '';
   let autoScroll = true;
 
-  function formatTime(timestamp: number): string {
-    const d = new Date(timestamp);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-  }
-
-  function formatVideoTimeSpan(startSec?: number, endSec?: number): string {
-    if (startSec === undefined || endSec === undefined) return '';
-    const fmt = (sec: number) => {
-      const m = Math.floor(sec / 60);
-      const s = (sec % 60).toFixed(1).padStart(4, '0');
-      return `${String(m).padStart(2, '0')}:${s}`;
-    };
-    return `🎬 ${fmt(startSec)} → ${fmt(endSec)}`;
-  }
-
-  function formatSrtTime(ms: number): string {
-    const clamped = Math.max(0, Math.round(ms));
-    const hours = Math.floor(clamped / (1000 * 60 * 60));
-    const minutes = Math.floor((clamped % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((clamped % (1000 * 60)) / 1000);
-    const millis = clamped % 1000;
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
-  }
-
   function updateStatus(connected: boolean) {
     if (connected) {
-      statusDot.className = 'status-dot connected';
-      statusText.textContent = 'Live • Connected';
+      statusDot.className = 'status-dot online';
+      statusText.textContent = 'Live Broadcast Connected';
     } else {
-      statusDot.className = 'status-dot disconnected';
+      statusDot.className = 'status-dot offline';
       statusText.textContent = 'Disconnected';
     }
   }
 
-  function highlightMatches(text: string, query: string): string {
-    if (!query.trim()) {
-      return escapeHtml(text);
-    }
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(${escapedQuery})`, 'gi');
-    const parts = text.split(regex);
-    return parts
-      .map((part) => (regex.test(part) ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
-      .join('');
-  }
-
-  function escapeHtml(text: string): string {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  function createEntryElement(entry: SubtitleHistoryEntry, displayIndex: number, query: string): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'subtitle-row';
-    row.dataset.id = entry.id;
-
-    const meta = document.createElement('div');
-    meta.className = 'cue-meta';
-
-    const indexSpan = document.createElement('span');
-    indexSpan.className = 'cue-index';
-    indexSpan.textContent = `#${displayIndex}`;
-
-    const timeSpan = document.createElement('span');
-    timeSpan.className = 'cue-time';
-    timeSpan.textContent = formatTime(entry.receivedAt);
-    timeSpan.title = new Date(entry.receivedAt).toLocaleString();
-
-    meta.appendChild(indexSpan);
-    meta.appendChild(timeSpan);
-
-    const videoSpan = document.createElement('span');
-    videoSpan.className = 'cue-video-time';
-    const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
-    videoSpan.textContent = videoLabel;
-    videoSpan.style.display = videoLabel ? 'inline-block' : 'none';
-    if (entry.videoTitle) {
-      videoSpan.title = entry.videoTitle;
-    }
-    meta.appendChild(videoSpan);
-
-    const textWrapper = document.createElement('div');
-    textWrapper.className = 'cue-text-wrapper';
-    textWrapper.innerHTML = highlightMatches(entry.text, query);
-
-    const actions = document.createElement('div');
-    actions.className = 'cue-actions';
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-cue-btn';
-    copyBtn.title = 'Copy subtitle text';
-    copyBtn.textContent = 'Copy';
-    copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(entry.text).then(() => {
-        copyBtn.textContent = 'Copied!';
-        copyBtn.classList.add('copied');
-        setTimeout(() => {
-          copyBtn.textContent = 'Copy';
-          copyBtn.classList.remove('copied');
-        }, 1500);
-      });
-    });
-
-    actions.appendChild(copyBtn);
-
-    row.appendChild(meta);
-    row.appendChild(textWrapper);
-    row.appendChild(actions);
-
-    return row;
-  }
-
   function renderList() {
-    subtitleList.innerHTML = '';
     const q = currentFilter.trim().toLowerCase();
-
     const filtered = q
-      ? allEntries.filter((entry) => entry.text.toLowerCase().includes(q))
+      ? allEntries.filter((e) => e.text.toLowerCase().includes(q))
       : allEntries;
 
-    countBadge.textContent = `${allEntries.length} ${allEntries.length === 1 ? 'Subtitle' : 'Subtitles'}`;
-    footerStats.textContent = `Showing ${filtered.length} of ${allEntries.length} subtitles`;
+    countBadge.textContent = `${filtered.length} entries`;
+    footerStats.textContent = `Showing ${filtered.length} of ${allEntries.length} saved subtitles`;
 
-    if (allEntries.length === 0) {
+    if (filtered.length === 0) {
+      subtitleList.innerHTML = '';
       emptyState.style.display = 'flex';
-      subtitleList.style.display = 'none';
       return;
     }
 
     emptyState.style.display = 'none';
-    subtitleList.style.display = 'flex';
+    subtitleList.innerHTML = '';
 
     const fragment = document.createDocumentFragment();
     filtered.forEach((entry, idx) => {
@@ -175,7 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     subtitleList.appendChild(fragment);
 
-    if (autoScroll && !q) {
+    if (autoScroll && !currentFilter) {
       scrollToBottom();
     }
   }
@@ -184,41 +88,33 @@ document.addEventListener('DOMContentLoaded', () => {
     allEntries.push(entry);
 
     const q = currentFilter.trim().toLowerCase();
-    countBadge.textContent = `${allEntries.length} ${allEntries.length === 1 ? 'Subtitle' : 'Subtitles'}`;
+    const matches = !q || entry.text.toLowerCase().includes(q);
 
-    if (emptyState.style.display !== 'none') {
+    countBadge.textContent = `${allEntries.length} entries`;
+    footerStats.textContent = `Showing ${allEntries.length} subtitles`;
+
+    if (matches) {
       emptyState.style.display = 'none';
-      subtitleList.style.display = 'flex';
-    }
-
-    if (!q || entry.text.toLowerCase().includes(q)) {
       const displayIndex = subtitleList.children.length + 1;
       const el = createEntryElement(entry, displayIndex, currentFilter);
       subtitleList.appendChild(el);
 
-      footerStats.textContent = `Showing ${subtitleList.children.length} of ${allEntries.length} subtitles`;
-
-      if (autoScroll && !q) {
+      if (autoScroll) {
         scrollToBottom();
       }
-    } else {
-      footerStats.textContent = `Showing ${subtitleList.children.length} of ${allEntries.length} subtitles`;
     }
   }
 
   function updateLastEntry(entry?: SubtitleHistoryEntry, fullRefresh?: boolean) {
-    if (fullRefresh || !entry) {
+    if (!entry) return;
+
+    if (fullRefresh) {
       chrome.runtime.sendMessage({ type: 'GET_HISTORY' }, (res) => {
-        if (res?.history) {
+        if (res && Array.isArray(res.history)) {
           allEntries = res.history;
           renderList();
         }
       });
-      return;
-    }
-
-    if (allEntries.length === 0) {
-      appendSingleEntry(entry);
       return;
     }
 
@@ -230,83 +126,60 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = subtitleList.querySelectorAll('.subtitle-row');
     const targetRow = rows[targetIdx] as HTMLElement | undefined;
 
-    if (targetRow && !q) {
+    if (targetRow) {
       const textWrapper = targetRow.querySelector('.cue-text-wrapper');
       if (textWrapper) {
         textWrapper.innerHTML = highlightMatches(entry.text, q);
-      }
-      const timeSpan = targetRow.querySelector('.cue-time') as HTMLElement | null;
-      if (timeSpan) {
-        timeSpan.textContent = formatTime(entry.receivedAt);
       }
       const videoSpan = targetRow.querySelector('.cue-video-time') as HTMLElement | null;
       if (videoSpan) {
         const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
         videoSpan.textContent = videoLabel;
-        videoSpan.style.display = videoLabel ? 'inline-block' : 'none';
+        if (entry.videoTitle) {
+          videoSpan.title = `Video: ${entry.videoTitle}`;
+        }
       }
-    } else {
-      renderList();
     }
   }
 
   function scrollToBottom() {
-    if (mainContent) {
+    if (!mainContent) return;
+    requestAnimationFrame(() => {
       mainContent.scrollTop = mainContent.scrollHeight;
-    }
+    });
   }
 
-  // Load Initial Data
+  chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res) => {
+    if (res) updateStatus(res.connected);
+  });
+
   chrome.runtime.sendMessage({ type: 'GET_HISTORY' }, (res) => {
-    if (res?.history) {
+    if (res && Array.isArray(res.history)) {
       allEntries = res.history;
-    }
-    if (res?.settings) {
-      retentionSelect.value = res.settings.retentionDuration || DEFAULT_HISTORY_SETTINGS.retentionDuration;
-      maxEntriesSelect.value = String(res.settings.maxEntries || DEFAULT_HISTORY_SETTINGS.maxEntries);
-    }
-    renderList();
-  });
-
-  chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (status) => {
-    if (status) {
-      updateStatus(status.connected);
+      if (res.settings) {
+        retentionSelect.value = res.settings.retentionDuration || '1d';
+        maxEntriesSelect.value = String(res.settings.maxEntries || 2000);
+      }
+      renderList();
     }
   });
 
-  // Settings Handlers
   retentionSelect.addEventListener('change', () => {
     const duration = retentionSelect.value as HistoryRetentionDuration;
-    chrome.runtime.sendMessage(
-      { type: 'UPDATE_HISTORY_SETTINGS', settings: { retentionDuration: duration } },
-      () => {
-        // Refresh trimmed history
-        chrome.runtime.sendMessage({ type: 'GET_HISTORY' }, (res) => {
-          if (res?.history) {
-            allEntries = res.history;
-            renderList();
-          }
-        });
-      }
-    );
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_HISTORY_SETTINGS',
+      settings: { retentionDuration: duration },
+    });
   });
 
   maxEntriesSelect.addEventListener('change', () => {
     const maxEntries = Number(maxEntriesSelect.value);
-    chrome.runtime.sendMessage(
-      { type: 'UPDATE_HISTORY_SETTINGS', settings: { maxEntries } },
-      () => {
-        chrome.runtime.sendMessage({ type: 'GET_HISTORY' }, (res) => {
-          if (res?.history) {
-            allEntries = res.history;
-            renderList();
-          }
-        });
-      }
-    );
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_HISTORY_SETTINGS',
+      settings: { maxEntries },
+    });
   });
 
-  // Search Filter
   searchInput.addEventListener('input', () => {
     currentFilter = searchInput.value;
     clearSearchBtn.style.display = currentFilter ? 'block' : 'none';
@@ -321,29 +194,23 @@ document.addEventListener('DOMContentLoaded', () => {
     searchInput.focus();
   });
 
-  // Auto Scroll Toggle
   autoScrollToggle.addEventListener('change', () => {
     autoScroll = autoScrollToggle.checked;
-    if (autoScroll) {
-      scrollToBottom();
+    if (autoScroll) scrollToBottom();
+  });
+
+  clearHistoryBtn.addEventListener('click', () => {
+    const confirmClear = window.confirm(
+      'Are you sure you want to clear your entire subtitle history? This cannot be undone.'
+    );
+    if (confirmClear) {
+      chrome.runtime.sendMessage({ type: 'CLEAR_HISTORY' }, () => {
+        allEntries = [];
+        renderList();
+      });
     }
   });
 
-  // Clear History
-  clearHistoryBtn.addEventListener('click', () => {
-    if (allEntries.length === 0) return;
-    const confirmClear = window.confirm(
-      `Are you sure you want to clear all ${allEntries.length} saved subtitles from history?`
-    );
-    if (!confirmClear) return;
-
-    chrome.runtime.sendMessage({ type: 'CLEAR_HISTORY' }, () => {
-      allEntries = [];
-      renderList();
-    });
-  });
-
-  // Export Dropdown
   exportBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     exportMenu.classList.toggle('show');
@@ -353,76 +220,16 @@ document.addEventListener('DOMContentLoaded', () => {
     exportMenu.classList.remove('show');
   });
 
-  function downloadFile(content: string, filename: string, mime: string) {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
   exportTxt.addEventListener('click', () => {
-    if (allEntries.length === 0) return;
-    const lines = allEntries.map((e) => `[${formatTime(e.receivedAt)}] ${e.text}`);
-    const textContent = lines.join('\n');
-    const dateStr = new Date().toISOString().slice(0, 10);
-    downloadFile(textContent, `whisper-subtitles-${dateStr}.txt`, 'text/plain;charset=utf-8');
+    exportAsTxt(allEntries);
   });
 
   exportSrt.addEventListener('click', () => {
-    if (allEntries.length === 0) return;
-
-    const baseTime = allEntries[0].receivedAt;
-    const hasVideoTimings = allEntries.some(
-      (e) => e.videoStartTime !== undefined && e.videoEndTime !== undefined
-    );
-
-    const srtItems = allEntries.map((entry) => {
-      if (entry.videoStartTime !== undefined && entry.videoEndTime !== undefined) {
-        const startMs = Math.max(0, Math.round(entry.videoStartTime * 1000));
-        const endMs = Math.max(startMs + 200, Math.round(entry.videoEndTime * 1000));
-        return { startMs, endMs, text: entry.text.trim(), isVideoTimed: true };
-      }
-      const durMs = entry.durationMs && entry.durationMs > 0 ? entry.durationMs : 2500;
-      const startMs = Math.max(0, entry.receivedAt - baseTime);
-      const endMs = startMs + durMs;
-      return { startMs, endMs, text: entry.text.trim(), isVideoTimed: false };
-    });
-
-    // If subtitles were captured from a video timeline, sort by video timestamp and ensure clean non-overlapping cues
-    const ordered = hasVideoTimings
-      ? srtItems
-          .filter((item) => item.text.length > 0)
-          .sort((a, b) => a.startMs - b.startMs)
-      : srtItems.filter((item) => item.text.length > 0);
-
-    for (let i = 0; i + 1 < ordered.length; i++) {
-      if (ordered[i].endMs > ordered[i + 1].startMs) {
-        ordered[i].endMs = Math.max(
-          ordered[i].startMs + 150,
-          ordered[i + 1].startMs - 20
-        );
-      }
-    }
-
-    let srt = '';
-    ordered.forEach((item, i) => {
-      srt += `${i + 1}\n${formatSrtTime(item.startMs)} --> ${formatSrtTime(item.endMs)}\n${item.text}\n\n`;
-    });
-
-    const dateStr = new Date().toISOString().slice(0, 10);
-    downloadFile(srt, `whisper-subtitles-${dateStr}.srt`, 'text/plain;charset=utf-8');
+    exportAsSrt(allEntries);
   });
 
   exportJson.addEventListener('click', () => {
-    if (allEntries.length === 0) return;
-    const jsonStr = JSON.stringify(allEntries, null, 2);
-    const dateStr = new Date().toISOString().slice(0, 10);
-    downloadFile(jsonStr, `whisper-subtitles-${dateStr}.json`, 'application/json;charset=utf-8');
+    exportAsJson(allEntries);
   });
 
   if (openOptionsBtn) {
@@ -431,7 +238,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Listen for real-time broadcasts
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'NEW_HISTORY_ENTRY') {
       appendSingleEntry(msg.entry);

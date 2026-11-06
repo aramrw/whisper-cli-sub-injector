@@ -1,19 +1,19 @@
 import {
   DEFAULT_SETTINGS,
-  DetectedVideoInfo,
   ExtensionSettings,
   MessageToContent,
   SubtitleCue,
 } from '../common/types';
 import { VideoOverlay } from './overlay';
 import { findAllVideos, isEligibleVideo } from './shadow-roots';
-
-interface VideoBinding {
-  id: string;
-  video: HTMLMediaElement;
-  overlay: VideoOverlay;
-  lastPlayed: number;
-}
+import { VideoBinding } from './types';
+import {
+  clearHighlight,
+  getDetectedVideosList,
+  getTargetVideo,
+  highlightVideo,
+} from './video-finder';
+import { registerKeyNavigation } from './key-navigation';
 
 let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 const bindings: Map<HTMLMediaElement, VideoBinding> = new Map();
@@ -23,20 +23,17 @@ let keepAlivePort: chrome.runtime.Port | null = null;
 let scanIntervalId: ReturnType<typeof setInterval> | null = null;
 let domObserver: MutationObserver | null = null;
 let contextInvalidated = false;
-let keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+let cleanupKeyNav: (() => void) | null = null;
 let visibilityHandler: (() => void) | null = null;
 let focusHandler: (() => void) | null = null;
 let takeoverHandler: (() => void) | null = null;
-
-let highlightedVideo: HTMLMediaElement | null = null;
-let originalOutline = '';
-let originalBoxShadow = '';
 
 function isExtensionContextValid(): boolean {
   if (contextInvalidated) return false;
   try {
     return Boolean(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
   } catch {
+    contextInvalidated = true;
     return false;
   }
 }
@@ -53,9 +50,9 @@ function cleanupInvalidatedContext() {
     domObserver.disconnect();
     domObserver = null;
   }
-  if (keydownHandler) {
-    window.removeEventListener('keydown', keydownHandler, true);
-    keydownHandler = null;
+  if (cleanupKeyNav) {
+    cleanupKeyNav();
+    cleanupKeyNav = null;
   }
   if (visibilityHandler) {
     document.removeEventListener('visibilitychange', visibilityHandler);
@@ -69,19 +66,23 @@ function cleanupInvalidatedContext() {
     window.removeEventListener('whisper-cli-sub-instance-takeover', takeoverHandler);
     takeoverHandler = null;
   }
-  keepAlivePort = null;
+  if (keepAlivePort) {
+    try {
+      keepAlivePort.disconnect();
+    } catch {}
+    keepAlivePort = null;
+  }
+
   clearHighlight();
 
   for (const binding of bindings.values()) {
-    try {
-      binding.overlay.destroy();
-    } catch {}
+    binding.overlay.destroy();
   }
   bindings.clear();
   activeVideo = null;
+  selectedVideoId = null;
 }
 
-// Load settings from storage
 function initSettings() {
   if (!isExtensionContextValid()) {
     cleanupInvalidatedContext();
@@ -93,9 +94,15 @@ function initSettings() {
         cleanupInvalidatedContext();
         return;
       }
-      settings = { ...DEFAULT_SETTINGS, ...(items as ExtensionSettings) };
-      for (const binding of bindings.values()) {
-        binding.overlay.applySettings(settings);
+      if (items) {
+        const maybeWrapped = (items as any).settings;
+        settings = {
+          ...DEFAULT_SETTINGS,
+          ...(maybeWrapped && typeof maybeWrapped === 'object' ? maybeWrapped : items),
+        };
+        for (const binding of bindings.values()) {
+          binding.overlay.applySettings(settings);
+        }
       }
     });
   } catch {
@@ -103,163 +110,37 @@ function initSettings() {
   }
 }
 
-// Establish or revive persistent keep-alive port to background service worker
 function ensureKeepAlive() {
-  if (keepAlivePort) return;
-  if (!isExtensionContextValid()) {
-    cleanupInvalidatedContext();
-    return;
-  }
+  if (!isExtensionContextValid() || keepAlivePort) return;
   try {
-    keepAlivePort = chrome.runtime.connect({ name: 'whisper-keepalive' });
+    keepAlivePort = chrome.runtime.connect({ name: 'content-keepalive' });
+    keepAlivePort.onMessage.addListener((message: MessageToContent) => {
+      handleIncomingMessage(message);
+    });
     keepAlivePort.onDisconnect.addListener(() => {
       keepAlivePort = null;
       if (isExtensionContextValid()) {
-        setTimeout(ensureKeepAlive, 1500);
+        setTimeout(ensureKeepAlive, 1000);
       } else {
         cleanupInvalidatedContext();
       }
     });
   } catch {
-    keepAlivePort = null;
-    if (!isExtensionContextValid()) {
-      cleanupInvalidatedContext();
-    }
+    cleanupInvalidatedContext();
   }
 }
 
-// Helper to highlight a video element on the webpage (like asbplayer)
-function highlightVideo(video: HTMLMediaElement) {
-  clearHighlight();
-  highlightedVideo = video;
-  originalOutline = video.style.outline;
-  originalBoxShadow = video.style.boxShadow;
-  video.style.setProperty('outline', '3px solid #38bdf8', 'important');
-  video.style.setProperty('box-shadow', '0 0 16px rgba(56, 189, 248, 0.75)', 'important');
+function resolveCurrentTarget(): HTMLMediaElement | null {
+  const result = getTargetVideo(bindings, settings, selectedVideoId, activeVideo);
+  activeVideo = result.newActive;
+  return result.target;
 }
 
-function clearHighlight() {
-  if (highlightedVideo) {
-    highlightedVideo.style.outline = originalOutline;
-    highlightedVideo.style.boxShadow = originalBoxShadow;
-    highlightedVideo = null;
-  }
+function resolveCurrentTargetBinding(): VideoBinding | null {
+  const target = resolveCurrentTarget();
+  return target ? bindings.get(target) || null : null;
 }
 
-// Format video title for UI
-function getVideoTitle(video: HTMLMediaElement): string {
-  if (video.title && video.title.trim()) return video.title.trim();
-  const ariaLabel = video.getAttribute('aria-label');
-  if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
-
-  if (video.currentSrc) {
-    try {
-      const url = new URL(video.currentSrc);
-      const filename = url.pathname.split('/').filter(Boolean).pop();
-      if (filename && !filename.includes('.m3u8')) {
-        return decodeURIComponent(filename).slice(0, 36);
-      }
-    } catch {}
-  }
-
-  const pageTitle = document.title ? document.title.replace(/\s*-\s*YouTube$/, '').trim() : '';
-  if (pageTitle) return pageTitle.slice(0, 36);
-
-  return 'HTML5 Video Player';
-}
-
-// Determine which video should display subtitles
-function getTargetVideo(): HTMLMediaElement | null {
-  // If manual selection is active and a video is selected:
-  if (!settings.autoEmbed && selectedVideoId) {
-    for (const binding of bindings.values()) {
-      if (binding.id === selectedVideoId && binding.video.isConnected && isEligibleVideo(binding.video)) {
-        return binding.video;
-      }
-    }
-  }
-
-  // Automatic selection logic (autoEmbed is enabled, or fallback):
-  // 1. If active video is still connected and playing
-  if (activeVideo && activeVideo.isConnected && !activeVideo.paused && isEligibleVideo(activeVideo)) {
-    return activeVideo;
-  }
-
-  // 2. Find any video currently playing
-  let bestCandidate: VideoBinding | null = null;
-  let maxPlayedTime = 0;
-
-  for (const binding of bindings.values()) {
-    if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
-
-    if (!binding.video.paused) {
-      if (binding.lastPlayed >= maxPlayedTime) {
-        maxPlayedTime = binding.lastPlayed;
-        bestCandidate = binding;
-      }
-    }
-  }
-
-  if (bestCandidate) {
-    activeVideo = bestCandidate.video;
-    return activeVideo;
-  }
-
-  // 3. If activeVideo was recently playing and is still connected/eligible (even if paused), retain it!
-  if (activeVideo && activeVideo.isConnected && isEligibleVideo(activeVideo)) {
-    return activeVideo;
-  }
-
-  // 4. Fallback to the largest visible eligible video
-  let largestVideo: HTMLMediaElement | null = null;
-  let maxArea = 0;
-
-  for (const binding of bindings.values()) {
-    if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
-    const rect = binding.video.getBoundingClientRect();
-    const area = rect.width * rect.height;
-    if (area > maxArea) {
-      maxArea = area;
-      largestVideo = binding.video;
-    }
-  }
-
-  if (largestVideo) {
-    activeVideo = largestVideo;
-    return activeVideo;
-  }
-
-  return null;
-}
-
-// Build detected videos info list for popup
-function getDetectedVideosList(): DetectedVideoInfo[] {
-  scanVideos();
-  const target = getTargetVideo();
-  const list: DetectedVideoInfo[] = [];
-
-  for (const binding of bindings.values()) {
-    if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
-    const v = binding.video;
-    const rect = v.getBoundingClientRect();
-
-    list.push({
-      id: binding.id,
-      src: v.src || '',
-      currentSrc: v.currentSrc || '',
-      currentTime: v.currentTime || 0,
-      duration: v.duration && !isNaN(v.duration) ? v.duration : 0,
-      paused: v.paused,
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-      isSelected: target === v,
-      title: getVideoTitle(v),
-    });
-  }
-  return list;
-}
-
-// Discovery loop
 function scanVideos() {
   if (!isExtensionContextValid()) {
     cleanupInvalidatedContext();
@@ -270,7 +151,6 @@ function scanVideos() {
   }
   const discovered = findAllVideos(document);
 
-  // Bind new videos
   for (const video of discovered) {
     if (!bindings.has(video) && isEligibleVideo(video)) {
       const vidId =
@@ -305,7 +185,6 @@ function scanVideos() {
     }
   }
 
-  // Clean up unbound / detached videos
   for (const [video, binding] of bindings.entries()) {
     if (!video.isConnected || !isEligibleVideo(video)) {
       binding.overlay.destroy();
@@ -317,7 +196,6 @@ function scanVideos() {
   }
 }
 
-// Handle tab activation & visibility changes
 function onTabActivated(cueFromBg?: SubtitleCue | null) {
   if (!isExtensionContextValid()) {
     cleanupInvalidatedContext();
@@ -325,7 +203,7 @@ function onTabActivated(cueFromBg?: SubtitleCue | null) {
   }
   ensureKeepAlive();
   scanVideos();
-  const target = getTargetVideo();
+  const target = resolveCurrentTarget();
   if (target) {
     const binding = bindings.get(target);
     if (binding) {
@@ -339,7 +217,6 @@ function onTabActivated(cueFromBg?: SubtitleCue | null) {
     }
   }
 
-  // Query background for latest connection status and last cue
   try {
     const p = chrome.runtime.sendMessage({ type: 'TAB_FOCUSED' });
     if (p && typeof p.then === 'function') {
@@ -358,159 +235,107 @@ function onTabActivated(cueFromBg?: SubtitleCue | null) {
   }
 }
 
+function handleIncomingMessage(
+  message: MessageToContent,
+  sendResponse?: (response?: any) => void
+): boolean {
+  if (!isExtensionContextValid()) {
+    cleanupInvalidatedContext();
+    return false;
+  }
+  if (message.type === 'NEW_SUBTITLE') {
+    const target = resolveCurrentTarget();
+    if (target) {
+      const binding = bindings.get(target);
+      if (binding) {
+        binding.overlay.showCue(message.cue);
+      }
+    }
+  } else if (message.type === 'SETTINGS_CHANGED') {
+    settings = message.settings;
+    for (const binding of bindings.values()) {
+      binding.overlay.applySettings(settings);
+    }
+  } else if (message.type === 'CLEAR_SUBTITLES') {
+    for (const binding of bindings.values()) {
+      binding.overlay.hide();
+    }
+  } else if (message.type === 'CLEAR_TIMELINE_CACHE') {
+    for (const binding of bindings.values()) {
+      binding.overlay.clearTimelineCache();
+    }
+  } else if (message.type === 'GET_DETECTED_VIDEOS') {
+    scanVideos();
+    const target = resolveCurrentTarget();
+    sendResponse?.({
+      videos: getDetectedVideosList(bindings, target),
+      autoEmbed: settings.autoEmbed ?? true,
+      selectedVideoId,
+    });
+    return true;
+  } else if (message.type === 'SELECT_VIDEO') {
+    selectedVideoId = message.videoId;
+    settings.autoEmbed = false;
+    for (const binding of bindings.values()) {
+      if (binding.id === message.videoId) {
+        activeVideo = binding.video;
+        binding.overlay.updatePosition();
+      } else {
+        binding.overlay.hide();
+      }
+    }
+    sendResponse?.({ success: true, activeVideoId: selectedVideoId });
+    return true;
+  } else if (message.type === 'SET_AUTO_EMBED') {
+    settings.autoEmbed = message.autoEmbed;
+    if (message.autoEmbed) {
+      selectedVideoId = null;
+      activeVideo = resolveCurrentTarget();
+    }
+    sendResponse?.({ success: true });
+    return true;
+  } else if (message.type === 'HIGHLIGHT_VIDEO') {
+    for (const binding of bindings.values()) {
+      if (binding.id === message.videoId) {
+        highlightVideo(binding.video);
+        break;
+      }
+    }
+    sendResponse?.({ success: true });
+    return true;
+  } else if (message.type === 'UNHIGHLIGHT_VIDEO') {
+    clearHighlight();
+    sendResponse?.({ success: true });
+    return true;
+  } else if (message.type === 'TAB_ACTIVATED') {
+    if (message.settings) {
+      settings = message.settings;
+      for (const binding of bindings.values()) {
+        binding.overlay.applySettings(settings);
+      }
+    }
+    onTabActivated(message.lastCue);
+  }
+  return false;
+}
+
 // Handle messages from background worker or popup
 if (isExtensionContextValid()) {
   try {
     chrome.runtime.onMessage.addListener((message: MessageToContent, _sender, sendResponse) => {
-      if (!isExtensionContextValid()) {
-        cleanupInvalidatedContext();
-        return false;
-      }
-      if (message.type === 'NEW_SUBTITLE') {
-        const target = getTargetVideo();
-        if (target) {
-          const binding = bindings.get(target);
-          if (binding) {
-            binding.overlay.showCue(message.cue);
-          }
-        }
-      } else if (message.type === 'SETTINGS_CHANGED') {
-        settings = message.settings;
-        for (const binding of bindings.values()) {
-          binding.overlay.applySettings(settings);
-        }
-      } else if (message.type === 'CLEAR_SUBTITLES') {
-        for (const binding of bindings.values()) {
-          binding.overlay.hide();
-        }
-      } else if (message.type === 'CLEAR_TIMELINE_CACHE') {
-        for (const binding of bindings.values()) {
-          binding.overlay.clearTimelineCache();
-        }
-      } else if (message.type === 'GET_DETECTED_VIDEOS') {
-        sendResponse({
-          videos: getDetectedVideosList(),
-          autoEmbed: settings.autoEmbed ?? true,
-          selectedVideoId,
-        });
-        return true;
-      } else if (message.type === 'SELECT_VIDEO') {
-        selectedVideoId = message.videoId;
-        settings.autoEmbed = false;
-        for (const binding of bindings.values()) {
-          if (binding.id === message.videoId) {
-            activeVideo = binding.video;
-            binding.overlay.updatePosition();
-          } else {
-            binding.overlay.hide();
-          }
-        }
-        sendResponse({ success: true, activeVideoId: selectedVideoId });
-        return true;
-      } else if (message.type === 'SET_AUTO_EMBED') {
-        settings.autoEmbed = message.autoEmbed;
-        if (message.autoEmbed) {
-          selectedVideoId = null;
-          activeVideo = getTargetVideo();
-        }
-        sendResponse({ success: true });
-        return true;
-      } else if (message.type === 'HIGHLIGHT_VIDEO') {
-        for (const binding of bindings.values()) {
-          if (binding.id === message.videoId) {
-            highlightVideo(binding.video);
-            break;
-          }
-        }
-        sendResponse({ success: true });
-        return true;
-      } else if (message.type === 'UNHIGHLIGHT_VIDEO') {
-        clearHighlight();
-        sendResponse({ success: true });
-        return true;
-      } else if (message.type === 'TAB_ACTIVATED') {
-        if (message.settings) {
-          settings = message.settings;
-          for (const binding of bindings.values()) {
-            binding.overlay.applySettings(settings);
-          }
-        }
-        onTabActivated(message.lastCue);
-      }
+      return handleIncomingMessage(message, sendResponse);
     });
   } catch {
     cleanupInvalidatedContext();
   }
 }
 
-// Helper to ignore keystrokes when typing in inputs/textareas
-function isEditableElement(el: EventTarget | null): boolean {
-  if (!el || !(el instanceof HTMLElement)) return false;
-  return (
-    el.isContentEditable ||
-    ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-  );
-}
-
-// Global key listener for smart subtitle replay (Left/Right Arrow) and Re-record Line (Alt+R / Option+R)
-function setupKeyNavigation() {
-  if (keydownHandler) {
-    window.removeEventListener('keydown', keydownHandler, true);
-  }
-  keydownHandler = (e: KeyboardEvent) => {
-    if (!isExtensionContextValid()) {
-      cleanupInvalidatedContext();
-      return;
-    }
-    if (isEditableElement(e.target)) return;
-    if (!settings.enabled) return;
-
-    // Alt+R / Option+R: Re-record current subtitle line
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
-      const target = getTargetVideo();
-      if (!target) return;
-      const binding = bindings.get(target);
-      if (!binding) return;
-      const handled = binding.overlay.rerecordCurrentSubtitle();
-      if (handled) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-      }
-      return;
-    }
-
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-    if (!settings.subNavigationEnabled) return;
-
-    const target = getTargetVideo();
-    if (!target) return;
-
-    const binding = bindings.get(target);
-    if (!binding) return;
-
-    const handled =
-      e.key === 'ArrowLeft'
-        ? binding.overlay.seekToPreviousSubtitle()
-        : binding.overlay.seekToNextSubtitle();
-    if (handled) {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-    }
-  };
-  window.addEventListener('keydown', keydownHandler, true);
-}
-
-// Setup continuous discovery
 function start() {
   if (!isExtensionContextValid()) {
     cleanupInvalidatedContext();
     return;
   }
 
-  // Tell any orphaned content script instance in this frame to tear down immediately
   try {
     window.dispatchEvent(new CustomEvent('whisper-cli-sub-instance-takeover'));
   } catch {}
@@ -523,12 +348,15 @@ function start() {
   initSettings();
   ensureKeepAlive();
   scanVideos();
-  setupKeyNavigation();
+  cleanupKeyNav = registerKeyNavigation(
+    () => settings,
+    resolveCurrentTargetBinding,
+    isExtensionContextValid,
+    cleanupInvalidatedContext
+  );
 
-  // Periodic poll to catch SPAs & dynamic video changes
   scanIntervalId = setInterval(scanVideos, 1000);
 
-  // MutationObserver for instant detection when new nodes appear
   const observeRoot = document.body || document.documentElement;
   if (observeRoot) {
     domObserver = new MutationObserver(() => {
@@ -540,7 +368,6 @@ function start() {
     });
   }
 
-  // Re-sync on visibility change (switching tabs back) and focus
   visibilityHandler = () => {
     if (!document.hidden && isExtensionContextValid()) {
       onTabActivated();

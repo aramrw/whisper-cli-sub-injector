@@ -1,5 +1,69 @@
 "use strict";
 (() => {
+  // src/popup/video-list.ts
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+  function formatDuration(sec) {
+    if (isNaN(sec) || sec <= 0) return "0:00";
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
+  }
+  function renderVideoList(container, videos, autoEmbed, onSelect, onHighlight, onUnhighlight) {
+    container.innerHTML = "";
+    if (!videos || videos.length === 0) {
+      container.innerHTML = `
+      <div class="video-empty-state">
+        <span class="empty-icon">\u{1F3AC}</span>
+        <span class="empty-text">No video elements found on this tab.</span>
+      </div>
+    `;
+      return;
+    }
+    for (const vid of videos) {
+      const card = document.createElement("div");
+      const isTargeted = vid.isSelected;
+      card.className = `video-card ${isTargeted ? "active-target" : ""}`;
+      card.dataset.videoId = vid.id;
+      const statusIcon = vid.paused ? "\u23F8" : "\u25B6";
+      const statusTitle = vid.paused ? "Paused" : "Playing";
+      const durStr = vid.duration > 0 ? `${formatDuration(vid.currentTime)} / ${formatDuration(vid.duration)}` : formatDuration(vid.currentTime);
+      const resStr = vid.width && vid.height ? `${vid.width}\xD7${vid.height}` : "Video";
+      let badgeHtml = "";
+      if (isTargeted) {
+        if (autoEmbed) {
+          badgeHtml = `<span class="video-badge badge-auto">Auto-Targeted</span>`;
+        } else {
+          badgeHtml = `<span class="video-badge badge-manual">Selected</span>`;
+        }
+      }
+      card.innerHTML = `
+      <div class="video-card-top">
+        <span class="video-play-status ${vid.paused ? "paused" : "playing"}" title="${statusTitle}">
+          ${statusIcon}
+        </span>
+        <span class="video-title" title="${escapeHtml(vid.title)}">
+          ${escapeHtml(vid.title)}
+        </span>
+        ${badgeHtml}
+      </div>
+      <div class="video-card-meta">
+        <span class="meta-item">${resStr}</span>
+        <span class="meta-sep">\u2022</span>
+        <span class="meta-item">${durStr}</span>
+        ${!isTargeted ? '<span class="select-hint">Click to target</span>' : ""}
+      </div>
+    `;
+      card.addEventListener("click", () => onSelect(vid.id));
+      card.addEventListener("mouseenter", () => onHighlight(vid.id));
+      card.addEventListener("mouseleave", () => onUnhighlight());
+      container.appendChild(card);
+    }
+  }
+
   // src/popup/popup.ts
   document.addEventListener("DOMContentLoaded", () => {
     const enabledToggle = document.getElementById("enabled-toggle");
@@ -30,14 +94,14 @@
     const testSubBtn = document.getElementById("test-sub-btn");
     function updateStatusUI(connected, enabled) {
       if (!enabled) {
-        statusDot.className = "status-dot disconnected";
+        statusDot.className = "status-dot disabled";
         statusText.textContent = "Subtitles Disabled";
       } else if (connected) {
-        statusDot.className = "status-dot connected";
-        statusText.textContent = "Live \u2022 Connected to whisper-cli";
+        statusDot.className = "status-dot online";
+        statusText.textContent = "Live SSE Connected";
       } else {
-        statusDot.className = "status-dot disconnected";
-        statusText.textContent = "Disconnected from server";
+        statusDot.className = "status-dot offline";
+        statusText.textContent = "Connecting...";
       }
     }
     function fetchCurrentStatus() {
@@ -46,99 +110,39 @@
         updateStatusUI(status.connected, status.enabled);
       });
     }
-    function escapeHtml(str) {
-      const div = document.createElement("div");
-      div.textContent = str;
-      return div.innerHTML;
-    }
-    function formatDuration(sec) {
-      if (isNaN(sec) || sec <= 0) return "0:00";
-      const m = Math.floor(sec / 60);
-      const s = Math.floor(sec % 60);
-      return `${m}:${s < 10 ? "0" : ""}${s}`;
-    }
-    function renderVideoList(videos, autoEmbed, _selectedVideoId) {
-      if (!videoListContainer) return;
-      videoListContainer.innerHTML = "";
-      if (!videos || videos.length === 0) {
-        videoListContainer.innerHTML = `
-        <div class="video-empty-state">
-          <span class="empty-icon">\u{1F3AC}</span>
-          <span class="empty-text">No video elements found on this tab.</span>
-        </div>
-      `;
-        return;
-      }
-      for (const vid of videos) {
-        const card = document.createElement("div");
-        const isTargeted = vid.isSelected;
-        card.className = `video-card ${isTargeted ? "active-target" : ""}`;
-        card.dataset.videoId = vid.id;
-        const statusIcon = vid.paused ? "\u23F8" : "\u25B6";
-        const statusTitle = vid.paused ? "Paused" : "Playing";
-        const durStr = vid.duration > 0 ? `${formatDuration(vid.currentTime)} / ${formatDuration(vid.duration)}` : formatDuration(vid.currentTime);
-        const resStr = vid.width && vid.height ? `${vid.width}\xD7${vid.height}` : "Video";
-        let badgeHtml = "";
-        if (isTargeted) {
-          if (autoEmbed) {
-            badgeHtml = `<span class="video-badge badge-auto">Auto-Targeted</span>`;
-          } else {
-            badgeHtml = `<span class="video-badge badge-manual">Selected</span>`;
-          }
+    function saveSetting(patch) {
+      chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: patch }, (res) => {
+        if (res?.settings) {
+          updateStatusUI(res.settings.connected, res.settings.enabled);
         }
-        card.innerHTML = `
-        <div class="video-card-top">
-          <span class="video-play-status ${vid.paused ? "paused" : "playing"}" title="${statusTitle}">
-            ${statusIcon}
-          </span>
-          <span class="video-title" title="${escapeHtml(vid.title)}">
-            ${escapeHtml(vid.title)}
-          </span>
-          ${badgeHtml}
-        </div>
-        <div class="video-card-meta">
-          <span class="meta-item">${resStr}</span>
-          <span class="meta-sep">\u2022</span>
-          <span class="meta-item">${durStr}</span>
-          ${!isTargeted ? '<span class="select-hint">Click to target</span>' : ""}
-        </div>
-      `;
-        card.addEventListener("click", () => {
-          autoEmbedToggle.checked = false;
-          saveSetting({ autoEmbed: false });
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]?.id) {
-              chrome.tabs.sendMessage(
-                tabs[0].id,
-                { type: "SELECT_VIDEO", videoId: vid.id },
-                () => {
-                  fetchDetectedVideos();
-                }
-              );
-            }
+      });
+    }
+    function handleVideoSelect(vidId) {
+      autoEmbedToggle.checked = false;
+      saveSetting({ autoEmbed: false });
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: "SELECT_VIDEO", videoId: vidId }, () => {
+            fetchDetectedVideos();
           });
-        });
-        card.addEventListener("mouseenter", () => {
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]?.id) {
-              chrome.tabs.sendMessage(tabs[0].id, {
-                type: "HIGHLIGHT_VIDEO",
-                videoId: vid.id
-              }).catch(() => {
-              });
-            }
+        }
+      });
+    }
+    function handleVideoHighlight(vidId) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: "HIGHLIGHT_VIDEO", videoId: vidId }).catch(() => {
           });
-        });
-        card.addEventListener("mouseleave", () => {
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]?.id) {
-              chrome.tabs.sendMessage(tabs[0].id, { type: "UNHIGHLIGHT_VIDEO" }).catch(() => {
-              });
-            }
+        }
+      });
+    }
+    function handleVideoUnhighlight() {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: "UNHIGHLIGHT_VIDEO" }).catch(() => {
           });
-        });
-        videoListContainer.appendChild(card);
-      }
+        }
+      });
     }
     function fetchDetectedVideos() {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -159,8 +163,8 @@
             if (videoListContainer) {
               videoListContainer.innerHTML = `
               <div class="video-empty-state">
-                <span class="empty-icon">\u{1F50D}</span>
-                <span class="empty-text">No HTML5 video elements detected.</span>
+                <span class="empty-icon">\u{1F3AC}</span>
+                <span class="empty-text">No video elements found on this tab.</span>
               </div>
             `;
             }
@@ -169,12 +173,18 @@
           if (res.autoEmbed !== void 0) {
             autoEmbedToggle.checked = res.autoEmbed;
           }
-          renderVideoList(res.videos, res.autoEmbed, res.selectedVideoId);
+          renderVideoList(
+            videoListContainer,
+            res.videos,
+            res.autoEmbed,
+            handleVideoSelect,
+            handleVideoHighlight,
+            handleVideoUnhighlight
+          );
         });
       });
     }
-    chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (settings) => {
-      if (!settings) return;
+    function populatePopupSettings(settings) {
       enabledToggle.checked = settings.enabled;
       autoEmbedToggle.checked = settings.autoEmbed ?? true;
       pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;
@@ -197,28 +207,21 @@
       const padMs = settings.subNavigationPaddingMs ?? 150;
       subNavPaddingInput.value = String(padMs);
       subNavPaddingVal.textContent = `${padMs}ms`;
+    }
+    chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (settings) => {
+      if (!settings) return;
+      populatePopupSettings(settings);
     });
     fetchCurrentStatus();
     fetchDetectedVideos();
-    function saveSetting(patch) {
-      chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: patch }, (res) => {
-        if (res?.settings) {
-          updateStatusUI(res.settings.connected, res.settings.enabled);
-        }
-      });
-    }
     autoEmbedToggle.addEventListener("change", () => {
       const isAuto = autoEmbedToggle.checked;
       saveSetting({ autoEmbed: isAuto });
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(
-            tabs[0].id,
-            { type: "SET_AUTO_EMBED", autoEmbed: isAuto },
-            () => {
-              fetchDetectedVideos();
-            }
-          );
+          chrome.tabs.sendMessage(tabs[0].id, { type: "SET_AUTO_EMBED", autoEmbed: isAuto }, () => {
+            fetchDetectedVideos();
+          });
         }
       });
     });
@@ -277,12 +280,10 @@
       saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
     });
     openHistoryBtn.addEventListener("click", () => {
-      const historyUrl = chrome.runtime.getURL("history.html");
-      chrome.tabs.create({ url: historyUrl });
+      chrome.tabs.create({ url: chrome.runtime.getURL("history.html") });
     });
     openOptionsBtn.addEventListener("click", () => {
-      const optionsUrl = chrome.runtime.getURL("options.html");
-      chrome.tabs.create({ url: optionsUrl });
+      chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
     });
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg.type === "SERVER_STATUS") {

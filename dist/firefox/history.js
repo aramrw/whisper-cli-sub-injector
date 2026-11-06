@@ -1,10 +1,154 @@
 "use strict";
 (() => {
-  // src/common/types.ts
-  var DEFAULT_HISTORY_SETTINGS = {
-    retentionDuration: "24h",
-    maxEntries: 1e3
-  };
+  // src/history/export.ts
+  function formatTime(timestamp) {
+    const d = new Date(timestamp);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  function formatSrtTime(ms) {
+    const clamped = Math.max(0, Math.round(ms));
+    const hours = Math.floor(clamped / (1e3 * 60 * 60));
+    const minutes = Math.floor(clamped % (1e3 * 60 * 60) / (1e3 * 60));
+    const seconds = Math.floor(clamped % (1e3 * 60) / 1e3);
+    const millis = clamped % 1e3;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
+  }
+  function downloadFile(content, filename, mime) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function exportAsTxt(entries) {
+    if (entries.length === 0) return;
+    const lines = entries.map((e) => `[${formatTime(e.receivedAt)}] ${e.text}`);
+    const textContent = lines.join("\n");
+    const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    downloadFile(textContent, `whisper-subtitles-${dateStr}.txt`, "text/plain;charset=utf-8");
+  }
+  function exportAsSrt(entries) {
+    if (entries.length === 0) return;
+    const baseTime = entries[0].receivedAt;
+    const hasVideoTimings = entries.some(
+      (e) => e.videoStartTime !== void 0 && e.videoEndTime !== void 0
+    );
+    const srtItems = entries.map((entry) => {
+      if (entry.videoStartTime !== void 0 && entry.videoEndTime !== void 0) {
+        const startMs2 = Math.max(0, Math.round(entry.videoStartTime * 1e3));
+        const endMs2 = Math.max(startMs2 + 200, Math.round(entry.videoEndTime * 1e3));
+        return { startMs: startMs2, endMs: endMs2, text: entry.text.trim(), isVideoTimed: true };
+      }
+      const durMs = entry.durationMs && entry.durationMs > 0 ? entry.durationMs : 2500;
+      const startMs = Math.max(0, entry.receivedAt - baseTime);
+      const endMs = startMs + durMs;
+      return { startMs, endMs, text: entry.text.trim(), isVideoTimed: false };
+    });
+    const ordered = hasVideoTimings ? srtItems.filter((item) => item.text.length > 0).sort((a, b) => a.startMs - b.startMs) : srtItems.filter((item) => item.text.length > 0);
+    for (let i = 0; i + 1 < ordered.length; i++) {
+      if (ordered[i].endMs > ordered[i + 1].startMs) {
+        ordered[i].endMs = Math.max(ordered[i].startMs + 150, ordered[i + 1].startMs - 20);
+      }
+    }
+    let srt = "";
+    ordered.forEach((item, i) => {
+      srt += `${i + 1}
+${formatSrtTime(item.startMs)} --> ${formatSrtTime(item.endMs)}
+${item.text}
+
+`;
+    });
+    const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    downloadFile(srt, `whisper-subtitles-${dateStr}.srt`, "text/plain;charset=utf-8");
+  }
+  function exportAsJson(entries) {
+    if (entries.length === 0) return;
+    const jsonStr = JSON.stringify(entries, null, 2);
+    const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    downloadFile(jsonStr, `whisper-subtitles-${dateStr}.json`, "application/json;charset=utf-8");
+  }
+
+  // src/history/render.ts
+  function formatVideoTimeSpan(startSec, endSec) {
+    if (startSec === void 0 || endSec === void 0) return "";
+    const fmt = (sec) => {
+      const m = Math.floor(sec / 60);
+      const s = (sec % 60).toFixed(1).padStart(4, "0");
+      return `${m}:${s}`;
+    };
+    return `[${fmt(startSec)} - ${fmt(endSec)}]`;
+  }
+  function highlightMatches(text, query) {
+    if (!query) return escapeHtml(text);
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escapedQuery})`, "gi");
+    const parts = text.split(regex);
+    return parts.map((part) => regex.test(part) ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)).join("");
+  }
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  function createEntryElement(entry, displayIndex, query) {
+    const row = document.createElement("div");
+    row.className = "subtitle-row";
+    row.dataset.id = entry.id;
+    const meta = document.createElement("div");
+    meta.className = "cue-meta";
+    const indexSpan = document.createElement("span");
+    indexSpan.className = "cue-index";
+    indexSpan.textContent = `#${displayIndex}`;
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "cue-time";
+    timeSpan.textContent = formatTime(entry.receivedAt);
+    if (entry.timestamp) {
+      timeSpan.title = `Source timestamp: ${entry.timestamp}`;
+    }
+    meta.appendChild(indexSpan);
+    meta.appendChild(timeSpan);
+    const videoSpan = document.createElement("span");
+    videoSpan.className = "cue-video-time";
+    const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
+    if (videoLabel) {
+      videoSpan.textContent = videoLabel;
+      if (entry.videoTitle) {
+        videoSpan.title = `Video: ${entry.videoTitle}`;
+      }
+    }
+    meta.appendChild(videoSpan);
+    const textWrapper = document.createElement("div");
+    textWrapper.className = "cue-text-wrapper";
+    textWrapper.innerHTML = highlightMatches(entry.text, query);
+    const actions = document.createElement("div");
+    actions.className = "cue-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn-icon";
+    copyBtn.title = "Copy subtitle text";
+    copyBtn.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg>
+  `;
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(entry.text);
+        copyBtn.classList.add("copied");
+        setTimeout(() => copyBtn.classList.remove("copied"), 1200);
+      } catch {
+      }
+    });
+    actions.appendChild(copyBtn);
+    row.appendChild(meta);
+    row.appendChild(textWrapper);
+    row.appendChild(actions);
+    return row;
+  }
 
   // src/history/history.ts
   document.addEventListener("DOMContentLoaded", () => {
@@ -30,154 +174,62 @@
     let allEntries = [];
     let currentFilter = "";
     let autoScroll = true;
-    function formatTime(timestamp) {
-      const d = new Date(timestamp);
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-    }
-    function formatVideoTimeSpan(startSec, endSec) {
-      if (startSec === void 0 || endSec === void 0) return "";
-      const fmt = (sec) => {
-        const m = Math.floor(sec / 60);
-        const s = (sec % 60).toFixed(1).padStart(4, "0");
-        return `${String(m).padStart(2, "0")}:${s}`;
-      };
-      return `\u{1F3AC} ${fmt(startSec)} \u2192 ${fmt(endSec)}`;
-    }
-    function formatSrtTime(ms) {
-      const clamped = Math.max(0, Math.round(ms));
-      const hours = Math.floor(clamped / (1e3 * 60 * 60));
-      const minutes = Math.floor(clamped % (1e3 * 60 * 60) / (1e3 * 60));
-      const seconds = Math.floor(clamped % (1e3 * 60) / 1e3);
-      const millis = clamped % 1e3;
-      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
-    }
     function updateStatus(connected) {
       if (connected) {
-        statusDot.className = "status-dot connected";
-        statusText.textContent = "Live \u2022 Connected";
+        statusDot.className = "status-dot online";
+        statusText.textContent = "Live Broadcast Connected";
       } else {
-        statusDot.className = "status-dot disconnected";
+        statusDot.className = "status-dot offline";
         statusText.textContent = "Disconnected";
       }
     }
-    function highlightMatches(text, query) {
-      if (!query.trim()) {
-        return escapeHtml(text);
-      }
-      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const regex = new RegExp(`(${escapedQuery})`, "gi");
-      const parts = text.split(regex);
-      return parts.map((part) => regex.test(part) ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)).join("");
-    }
-    function escapeHtml(text) {
-      const div = document.createElement("div");
-      div.textContent = text;
-      return div.innerHTML;
-    }
-    function createEntryElement(entry, displayIndex, query) {
-      const row = document.createElement("div");
-      row.className = "subtitle-row";
-      row.dataset.id = entry.id;
-      const meta = document.createElement("div");
-      meta.className = "cue-meta";
-      const indexSpan = document.createElement("span");
-      indexSpan.className = "cue-index";
-      indexSpan.textContent = `#${displayIndex}`;
-      const timeSpan = document.createElement("span");
-      timeSpan.className = "cue-time";
-      timeSpan.textContent = formatTime(entry.receivedAt);
-      timeSpan.title = new Date(entry.receivedAt).toLocaleString();
-      meta.appendChild(indexSpan);
-      meta.appendChild(timeSpan);
-      const videoSpan = document.createElement("span");
-      videoSpan.className = "cue-video-time";
-      const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
-      videoSpan.textContent = videoLabel;
-      videoSpan.style.display = videoLabel ? "inline-block" : "none";
-      if (entry.videoTitle) {
-        videoSpan.title = entry.videoTitle;
-      }
-      meta.appendChild(videoSpan);
-      const textWrapper = document.createElement("div");
-      textWrapper.className = "cue-text-wrapper";
-      textWrapper.innerHTML = highlightMatches(entry.text, query);
-      const actions = document.createElement("div");
-      actions.className = "cue-actions";
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "copy-cue-btn";
-      copyBtn.title = "Copy subtitle text";
-      copyBtn.textContent = "Copy";
-      copyBtn.addEventListener("click", () => {
-        navigator.clipboard.writeText(entry.text).then(() => {
-          copyBtn.textContent = "Copied!";
-          copyBtn.classList.add("copied");
-          setTimeout(() => {
-            copyBtn.textContent = "Copy";
-            copyBtn.classList.remove("copied");
-          }, 1500);
-        });
-      });
-      actions.appendChild(copyBtn);
-      row.appendChild(meta);
-      row.appendChild(textWrapper);
-      row.appendChild(actions);
-      return row;
-    }
     function renderList() {
-      subtitleList.innerHTML = "";
       const q = currentFilter.trim().toLowerCase();
-      const filtered = q ? allEntries.filter((entry) => entry.text.toLowerCase().includes(q)) : allEntries;
-      countBadge.textContent = `${allEntries.length} ${allEntries.length === 1 ? "Subtitle" : "Subtitles"}`;
-      footerStats.textContent = `Showing ${filtered.length} of ${allEntries.length} subtitles`;
-      if (allEntries.length === 0) {
+      const filtered = q ? allEntries.filter((e) => e.text.toLowerCase().includes(q)) : allEntries;
+      countBadge.textContent = `${filtered.length} entries`;
+      footerStats.textContent = `Showing ${filtered.length} of ${allEntries.length} saved subtitles`;
+      if (filtered.length === 0) {
+        subtitleList.innerHTML = "";
         emptyState.style.display = "flex";
-        subtitleList.style.display = "none";
         return;
       }
       emptyState.style.display = "none";
-      subtitleList.style.display = "flex";
+      subtitleList.innerHTML = "";
       const fragment = document.createDocumentFragment();
       filtered.forEach((entry, idx) => {
         const el = createEntryElement(entry, idx + 1, currentFilter);
         fragment.appendChild(el);
       });
       subtitleList.appendChild(fragment);
-      if (autoScroll && !q) {
+      if (autoScroll && !currentFilter) {
         scrollToBottom();
       }
     }
     function appendSingleEntry(entry) {
       allEntries.push(entry);
       const q = currentFilter.trim().toLowerCase();
-      countBadge.textContent = `${allEntries.length} ${allEntries.length === 1 ? "Subtitle" : "Subtitles"}`;
-      if (emptyState.style.display !== "none") {
+      const matches = !q || entry.text.toLowerCase().includes(q);
+      countBadge.textContent = `${allEntries.length} entries`;
+      footerStats.textContent = `Showing ${allEntries.length} subtitles`;
+      if (matches) {
         emptyState.style.display = "none";
-        subtitleList.style.display = "flex";
-      }
-      if (!q || entry.text.toLowerCase().includes(q)) {
         const displayIndex = subtitleList.children.length + 1;
         const el = createEntryElement(entry, displayIndex, currentFilter);
         subtitleList.appendChild(el);
-        footerStats.textContent = `Showing ${subtitleList.children.length} of ${allEntries.length} subtitles`;
-        if (autoScroll && !q) {
+        if (autoScroll) {
           scrollToBottom();
         }
-      } else {
-        footerStats.textContent = `Showing ${subtitleList.children.length} of ${allEntries.length} subtitles`;
       }
     }
     function updateLastEntry(entry, fullRefresh) {
-      if (fullRefresh || !entry) {
+      if (!entry) return;
+      if (fullRefresh) {
         chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
-          if (res?.history) {
+          if (res && Array.isArray(res.history)) {
             allEntries = res.history;
             renderList();
           }
         });
-        return;
-      }
-      if (allEntries.length === 0) {
-        appendSingleEntry(entry);
         return;
       }
       const existingIdx = allEntries.findIndex((e) => e.id === entry.id);
@@ -186,72 +238,53 @@
       const q = currentFilter.trim().toLowerCase();
       const rows = subtitleList.querySelectorAll(".subtitle-row");
       const targetRow = rows[targetIdx];
-      if (targetRow && !q) {
+      if (targetRow) {
         const textWrapper = targetRow.querySelector(".cue-text-wrapper");
         if (textWrapper) {
           textWrapper.innerHTML = highlightMatches(entry.text, q);
-        }
-        const timeSpan = targetRow.querySelector(".cue-time");
-        if (timeSpan) {
-          timeSpan.textContent = formatTime(entry.receivedAt);
         }
         const videoSpan = targetRow.querySelector(".cue-video-time");
         if (videoSpan) {
           const videoLabel = formatVideoTimeSpan(entry.videoStartTime, entry.videoEndTime);
           videoSpan.textContent = videoLabel;
-          videoSpan.style.display = videoLabel ? "inline-block" : "none";
+          if (entry.videoTitle) {
+            videoSpan.title = `Video: ${entry.videoTitle}`;
+          }
         }
-      } else {
-        renderList();
       }
     }
     function scrollToBottom() {
-      if (mainContent) {
+      if (!mainContent) return;
+      requestAnimationFrame(() => {
         mainContent.scrollTop = mainContent.scrollHeight;
-      }
+      });
     }
-    chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
-      if (res?.history) {
-        allEntries = res.history;
-      }
-      if (res?.settings) {
-        retentionSelect.value = res.settings.retentionDuration || DEFAULT_HISTORY_SETTINGS.retentionDuration;
-        maxEntriesSelect.value = String(res.settings.maxEntries || DEFAULT_HISTORY_SETTINGS.maxEntries);
-      }
-      renderList();
+    chrome.runtime.sendMessage({ type: "GET_STATUS" }, (res) => {
+      if (res) updateStatus(res.connected);
     });
-    chrome.runtime.sendMessage({ type: "GET_STATUS" }, (status) => {
-      if (status) {
-        updateStatus(status.connected);
+    chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
+      if (res && Array.isArray(res.history)) {
+        allEntries = res.history;
+        if (res.settings) {
+          retentionSelect.value = res.settings.retentionDuration || "1d";
+          maxEntriesSelect.value = String(res.settings.maxEntries || 2e3);
+        }
+        renderList();
       }
     });
     retentionSelect.addEventListener("change", () => {
       const duration = retentionSelect.value;
-      chrome.runtime.sendMessage(
-        { type: "UPDATE_HISTORY_SETTINGS", settings: { retentionDuration: duration } },
-        () => {
-          chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
-            if (res?.history) {
-              allEntries = res.history;
-              renderList();
-            }
-          });
-        }
-      );
+      chrome.runtime.sendMessage({
+        type: "UPDATE_HISTORY_SETTINGS",
+        settings: { retentionDuration: duration }
+      });
     });
     maxEntriesSelect.addEventListener("change", () => {
       const maxEntries = Number(maxEntriesSelect.value);
-      chrome.runtime.sendMessage(
-        { type: "UPDATE_HISTORY_SETTINGS", settings: { maxEntries } },
-        () => {
-          chrome.runtime.sendMessage({ type: "GET_HISTORY" }, (res) => {
-            if (res?.history) {
-              allEntries = res.history;
-              renderList();
-            }
-          });
-        }
-      );
+      chrome.runtime.sendMessage({
+        type: "UPDATE_HISTORY_SETTINGS",
+        settings: { maxEntries }
+      });
     });
     searchInput.addEventListener("input", () => {
       currentFilter = searchInput.value;
@@ -267,20 +300,18 @@
     });
     autoScrollToggle.addEventListener("change", () => {
       autoScroll = autoScrollToggle.checked;
-      if (autoScroll) {
-        scrollToBottom();
-      }
+      if (autoScroll) scrollToBottom();
     });
     clearHistoryBtn.addEventListener("click", () => {
-      if (allEntries.length === 0) return;
       const confirmClear = window.confirm(
-        `Are you sure you want to clear all ${allEntries.length} saved subtitles from history?`
+        "Are you sure you want to clear your entire subtitle history? This cannot be undone."
       );
-      if (!confirmClear) return;
-      chrome.runtime.sendMessage({ type: "CLEAR_HISTORY" }, () => {
-        allEntries = [];
-        renderList();
-      });
+      if (confirmClear) {
+        chrome.runtime.sendMessage({ type: "CLEAR_HISTORY" }, () => {
+          allEntries = [];
+          renderList();
+        });
+      }
     });
     exportBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -289,66 +320,14 @@
     document.addEventListener("click", () => {
       exportMenu.classList.remove("show");
     });
-    function downloadFile(content, filename, mime) {
-      const blob = new Blob([content], { type: mime });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
     exportTxt.addEventListener("click", () => {
-      if (allEntries.length === 0) return;
-      const lines = allEntries.map((e) => `[${formatTime(e.receivedAt)}] ${e.text}`);
-      const textContent = lines.join("\n");
-      const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-      downloadFile(textContent, `whisper-subtitles-${dateStr}.txt`, "text/plain;charset=utf-8");
+      exportAsTxt(allEntries);
     });
     exportSrt.addEventListener("click", () => {
-      if (allEntries.length === 0) return;
-      const baseTime = allEntries[0].receivedAt;
-      const hasVideoTimings = allEntries.some(
-        (e) => e.videoStartTime !== void 0 && e.videoEndTime !== void 0
-      );
-      const srtItems = allEntries.map((entry) => {
-        if (entry.videoStartTime !== void 0 && entry.videoEndTime !== void 0) {
-          const startMs2 = Math.max(0, Math.round(entry.videoStartTime * 1e3));
-          const endMs2 = Math.max(startMs2 + 200, Math.round(entry.videoEndTime * 1e3));
-          return { startMs: startMs2, endMs: endMs2, text: entry.text.trim(), isVideoTimed: true };
-        }
-        const durMs = entry.durationMs && entry.durationMs > 0 ? entry.durationMs : 2500;
-        const startMs = Math.max(0, entry.receivedAt - baseTime);
-        const endMs = startMs + durMs;
-        return { startMs, endMs, text: entry.text.trim(), isVideoTimed: false };
-      });
-      const ordered = hasVideoTimings ? srtItems.filter((item) => item.text.length > 0).sort((a, b) => a.startMs - b.startMs) : srtItems.filter((item) => item.text.length > 0);
-      for (let i = 0; i + 1 < ordered.length; i++) {
-        if (ordered[i].endMs > ordered[i + 1].startMs) {
-          ordered[i].endMs = Math.max(
-            ordered[i].startMs + 150,
-            ordered[i + 1].startMs - 20
-          );
-        }
-      }
-      let srt = "";
-      ordered.forEach((item, i) => {
-        srt += `${i + 1}
-${formatSrtTime(item.startMs)} --> ${formatSrtTime(item.endMs)}
-${item.text}
-
-`;
-      });
-      const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-      downloadFile(srt, `whisper-subtitles-${dateStr}.srt`, "text/plain;charset=utf-8");
+      exportAsSrt(allEntries);
     });
     exportJson.addEventListener("click", () => {
-      if (allEntries.length === 0) return;
-      const jsonStr = JSON.stringify(allEntries, null, 2);
-      const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-      downloadFile(jsonStr, `whisper-subtitles-${dateStr}.json`, "application/json;charset=utf-8");
+      exportAsJson(allEntries);
     });
     if (openOptionsBtn) {
       openOptionsBtn.addEventListener("click", () => {

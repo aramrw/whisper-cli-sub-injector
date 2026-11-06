@@ -1,0 +1,13 @@
+project,test_name,phase,iterations,mean_ms,median_ms,p95_ms,p99_ms,min_ms,max_ms
+whisper-cli-sub-injector,bg_add_cue_to_history_partial_1500,before,100,2.0420,1.9101,2.3838,8.7182,1.7545,8.7182
+whisper-cli-sub-injector,bg_sync_video_cue_timing_partial_1500,before,100,1.8306,1.8185,2.0467,2.1658,1.6855,2.1658
+whisper-cli-sub-injector,bg_cue_to_content_delivery_25_tabs,before,100,2.7003,2.6823,2.9264,3.0179,2.5532,3.0179
+whisper-cli-sub-injector,content_render_subtitle_stack_partial,before,200,0.0951,0.0914,0.0987,0.2484,0.0910,0.3505
+whisper-cli-sub-injector,content_overlay_show_cue_partial_1500,before,150,0.1161,0.1030,0.1557,0.4287,0.1015,0.9114
+whisper-cli-sub-injector,content_estimate_cue_timing,before,200,0.0003,0.0003,0.0003,0.0018,0.0002,0.0076
+whisper-cli-sub-injector,bg_add_cue_to_history_partial_1500,after,100,0.0305,0.0011,0.0074,2.5762,0.0010,2.5762
+whisper-cli-sub-injector,bg_sync_video_cue_timing_partial_1500,after,100,0.0303,0.0013,0.0067,2.7296,0.0012,2.7296
+whisper-cli-sub-injector,bg_cue_to_content_delivery_25_tabs,after,100,0.0317,0.0259,0.0545,0.2488,0.0257,0.2488
+whisper-cli-sub-injector,content_render_subtitle_stack_partial,after,200,0.0028,0.0010,0.0022,0.0898,0.0009,0.2256
+whisper-cli-sub-injector,content_overlay_show_cue_partial_1500,after,150,0.0136,0.0037,0.0255,0.0731,0.0035,0.9836
+whisper-cli-sub-injector,content_estimate_cue_timing,after,200,0.0003,0.0003,0.0003,0.0013,0.0002,0.0054

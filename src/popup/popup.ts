@@ -1,4 +1,5 @@
 import { DetectedVideoInfo, ExtensionSettings, SubtitleCue } from '../common/types';
+import { renderVideoList } from './video-list';
 
 document.addEventListener('DOMContentLoaded', () => {
   const enabledToggle = document.getElementById('enabled-toggle') as HTMLInputElement;
@@ -7,7 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const openHistoryBtn = document.getElementById('open-history-btn') as HTMLButtonElement;
   const openOptionsBtn = document.getElementById('open-options-btn') as HTMLButtonElement;
 
-  // Detected Videos elements
   const autoEmbedToggle = document.getElementById('auto-embed-toggle') as HTMLInputElement;
   const refreshVideosBtn = document.getElementById('refresh-videos-btn') as HTMLButtonElement;
   const videoListContainer = document.getElementById('video-list-container') as HTMLDivElement;
@@ -38,14 +38,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateStatusUI(connected: boolean, enabled: boolean) {
     if (!enabled) {
-      statusDot.className = 'status-dot disconnected';
+      statusDot.className = 'status-dot disabled';
       statusText.textContent = 'Subtitles Disabled';
     } else if (connected) {
-      statusDot.className = 'status-dot connected';
-      statusText.textContent = 'Live • Connected to whisper-cli';
+      statusDot.className = 'status-dot online';
+      statusText.textContent = 'Live SSE Connected';
     } else {
-      statusDot.className = 'status-dot disconnected';
-      statusText.textContent = 'Disconnected from server';
+      statusDot.className = 'status-dot offline';
+      statusText.textContent = 'Connecting...';
     }
   }
 
@@ -56,117 +56,40 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function escapeHtml(str: string): string {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  function formatDuration(sec: number): string {
-    if (isNaN(sec) || sec <= 0) return '0:00';
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
-  }
-
-  function renderVideoList(
-    videos: DetectedVideoInfo[],
-    autoEmbed: boolean,
-    _selectedVideoId: string | null
-  ) {
-    if (!videoListContainer) return;
-    videoListContainer.innerHTML = '';
-
-    if (!videos || videos.length === 0) {
-      videoListContainer.innerHTML = `
-        <div class="video-empty-state">
-          <span class="empty-icon">🎬</span>
-          <span class="empty-text">No video elements found on this tab.</span>
-        </div>
-      `;
-      return;
-    }
-
-    for (const vid of videos) {
-      const card = document.createElement('div');
-      const isTargeted = vid.isSelected;
-      card.className = `video-card ${isTargeted ? 'active-target' : ''}`;
-      card.dataset.videoId = vid.id;
-
-      const statusIcon = vid.paused ? '⏸' : '▶';
-      const statusTitle = vid.paused ? 'Paused' : 'Playing';
-      const durStr =
-        vid.duration > 0
-          ? `${formatDuration(vid.currentTime)} / ${formatDuration(vid.duration)}`
-          : formatDuration(vid.currentTime);
-      const resStr = vid.width && vid.height ? `${vid.width}×${vid.height}` : 'Video';
-
-      let badgeHtml = '';
-      if (isTargeted) {
-        if (autoEmbed) {
-          badgeHtml = `<span class="video-badge badge-auto">Auto-Targeted</span>`;
-        } else {
-          badgeHtml = `<span class="video-badge badge-manual">Selected</span>`;
-        }
+  function saveSetting(patch: Partial<ExtensionSettings>) {
+    chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: patch }, (res) => {
+      if (res?.settings) {
+        updateStatusUI(res.settings.connected, res.settings.enabled);
       }
+    });
+  }
 
-      card.innerHTML = `
-        <div class="video-card-top">
-          <span class="video-play-status ${vid.paused ? 'paused' : 'playing'}" title="${statusTitle}">
-            ${statusIcon}
-          </span>
-          <span class="video-title" title="${escapeHtml(vid.title)}">
-            ${escapeHtml(vid.title)}
-          </span>
-          ${badgeHtml}
-        </div>
-        <div class="video-card-meta">
-          <span class="meta-item">${resStr}</span>
-          <span class="meta-sep">•</span>
-          <span class="meta-item">${durStr}</span>
-          ${!isTargeted ? '<span class="select-hint">Click to target</span>' : ''}
-        </div>
-      `;
-
-      // Click: manually target this video and disable autoEmbed
-      card.addEventListener('click', () => {
-        autoEmbedToggle.checked = false;
-        saveSetting({ autoEmbed: false });
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]?.id) {
-            chrome.tabs.sendMessage(
-              tabs[0].id,
-              { type: 'SELECT_VIDEO', videoId: vid.id },
-              () => {
-                fetchDetectedVideos();
-              }
-            );
-          }
+  function handleVideoSelect(vidId: string) {
+    autoEmbedToggle.checked = false;
+    saveSetting({ autoEmbed: false });
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'SELECT_VIDEO', videoId: vidId }, () => {
+          fetchDetectedVideos();
         });
-      });
+      }
+    });
+  }
 
-      // Hover: highlight the video on the actual webpage
-      card.addEventListener('mouseenter', () => {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]?.id) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              type: 'HIGHLIGHT_VIDEO',
-              videoId: vid.id,
-            }).catch(() => {});
-          }
-        });
-      });
+  function handleVideoHighlight(vidId: string) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'HIGHLIGHT_VIDEO', videoId: vidId }).catch(() => {});
+      }
+    });
+  }
 
-      card.addEventListener('mouseleave', () => {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]?.id) {
-            chrome.tabs.sendMessage(tabs[0].id, { type: 'UNHIGHLIGHT_VIDEO' }).catch(() => {});
-          }
-        });
-      });
-
-      videoListContainer.appendChild(card);
-    }
+  function handleVideoUnhighlight() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'UNHIGHLIGHT_VIDEO' }).catch(() => {});
+      }
+    });
   }
 
   function fetchDetectedVideos() {
@@ -189,8 +112,8 @@ document.addEventListener('DOMContentLoaded', () => {
           if (videoListContainer) {
             videoListContainer.innerHTML = `
               <div class="video-empty-state">
-                <span class="empty-icon">🔍</span>
-                <span class="empty-text">No HTML5 video elements detected.</span>
+                <span class="empty-icon">🎬</span>
+                <span class="empty-text">No video elements found on this tab.</span>
               </div>
             `;
           }
@@ -200,14 +123,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (res.autoEmbed !== undefined) {
           autoEmbedToggle.checked = res.autoEmbed;
         }
-        renderVideoList(res.videos, res.autoEmbed, res.selectedVideoId);
+        renderVideoList(
+          videoListContainer,
+          res.videos,
+          res.autoEmbed,
+          handleVideoSelect,
+          handleVideoHighlight,
+          handleVideoUnhighlight
+        );
       });
     });
   }
 
-  // Load initial settings and status
-  chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (settings: ExtensionSettings) => {
-    if (!settings) return;
+  function populatePopupSettings(settings: ExtensionSettings) {
     enabledToggle.checked = settings.enabled;
     autoEmbedToggle.checked = settings.autoEmbed ?? true;
 
@@ -236,19 +164,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const padMs = settings.subNavigationPaddingMs ?? 150;
     subNavPaddingInput.value = String(padMs);
     subNavPaddingVal.textContent = `${padMs}ms`;
+  }
+
+  // Load initial settings and status
+  chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (settings: ExtensionSettings) => {
+    if (!settings) return;
+    populatePopupSettings(settings);
   });
 
   fetchCurrentStatus();
   fetchDetectedVideos();
-
-  // Settings update helper
-  function saveSetting(patch: Partial<ExtensionSettings>) {
-    chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: patch }, (res) => {
-      if (res?.settings) {
-        updateStatusUI(res.settings.connected, res.settings.enabled);
-      }
-    });
-  }
 
   // Auto-embed toggle
   autoEmbedToggle.addEventListener('change', () => {
@@ -256,13 +181,9 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSetting({ autoEmbed: isAuto });
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(
-          tabs[0].id,
-          { type: 'SET_AUTO_EMBED', autoEmbed: isAuto },
-          () => {
-            fetchDetectedVideos();
-          }
-        );
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'SET_AUTO_EMBED', autoEmbed: isAuto }, () => {
+          fetchDetectedVideos();
+        });
       }
     });
   });
@@ -336,26 +257,20 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
   });
 
-  // Open History page in a new tab
   openHistoryBtn.addEventListener('click', () => {
-    const historyUrl = chrome.runtime.getURL('history.html');
-    chrome.tabs.create({ url: historyUrl });
+    chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
   });
 
-  // Open dedicated Options page in a new tab
   openOptionsBtn.addEventListener('click', () => {
-    const optionsUrl = chrome.runtime.getURL('options.html');
-    chrome.tabs.create({ url: optionsUrl });
+    chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
   });
 
-  // Listen for real-time server status pushes from background worker
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'SERVER_STATUS') {
       updateStatusUI(msg.connected, enabledToggle.checked);
     }
   });
 
-  // Send test subtitle
   testSubBtn.addEventListener('click', () => {
     const samplePhrases = [
       '¡Hola! Los subtítulos de whisper-cli funcionan perfectamente.',
@@ -380,12 +295,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Periodic polling for detected videos while popup is open
   const pollInterval = setInterval(fetchDetectedVideos, 2500);
 
   window.addEventListener('unload', () => {
     clearInterval(pollInterval);
-    // Clear video outline highlight on tab if popup closes
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
         chrome.tabs.sendMessage(tabs[0].id, { type: 'UNHIGHLIGHT_VIDEO' }).catch(() => {});

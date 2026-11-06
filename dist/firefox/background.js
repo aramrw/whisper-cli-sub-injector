@@ -56,22 +56,39 @@
     autoEmbed: true
   };
 
-  // src/background/background.ts
-  var currentSettings = { ...DEFAULT_SETTINGS };
+  // src/background/history-manager.ts
   var historySettings = { ...DEFAULT_HISTORY_SETTINGS };
   var historyCache = [];
-  var eventSource = null;
-  var isConnected = false;
-  var reconnectTimer = null;
-  var reconnectAttempts = 0;
-  var lastCue = null;
-  async function loadSettings() {
-    return new Promise((resolve) => {
-      chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
-        currentSettings = { ...DEFAULT_SETTINGS, ...items };
-        resolve(currentSettings);
-      });
-    });
+  var pendingSaveTimer = null;
+  function findHistoryIndexFromEnd(id) {
+    for (let i = historyCache.length - 1; i >= 0; i--) {
+      if (historyCache[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+  async function persistHistory(immediate) {
+    if (immediate) {
+      if (pendingSaveTimer) {
+        clearTimeout(pendingSaveTimer);
+        pendingSaveTimer = null;
+      }
+      await chrome.storage.local.set({ subtitleHistory: historyCache });
+      return;
+    }
+    if (!pendingSaveTimer) {
+      pendingSaveTimer = setTimeout(() => {
+        pendingSaveTimer = null;
+        chrome.storage.local.set({ subtitleHistory: historyCache });
+      }, 400);
+    }
+  }
+  function getHistoryCache() {
+    return historyCache;
+  }
+  function getHistorySettings() {
+    return historySettings;
   }
   async function loadHistory() {
     return new Promise((resolve) => {
@@ -116,7 +133,7 @@
       lastEntry.id = cue.id;
       lastEntry.durationMs = cue.durationMs ?? lastEntry.durationMs;
       lastEntry.isFinal = cue.isFinal;
-      await chrome.storage.local.set({ subtitleHistory: historyCache });
+      await persistHistory(Boolean(cue.isFinal));
       chrome.runtime.sendMessage({
         type: "UPDATE_HISTORY_ENTRY",
         entry: lastEntry
@@ -135,40 +152,244 @@
     historyCache.push(entry);
     const retentionMs = getRetentionMs(historySettings.retentionDuration);
     const cutoff = retentionMs === Infinity ? 0 : Date.now() - retentionMs;
-    if (cutoff > 0) {
+    if (cutoff > 0 && historyCache[0] && historyCache[0].receivedAt < cutoff) {
       historyCache = historyCache.filter((item) => item.receivedAt >= cutoff);
     }
     if (historyCache.length > historySettings.maxEntries) {
       historyCache = historyCache.slice(historyCache.length - historySettings.maxEntries);
     }
-    await chrome.storage.local.set({ subtitleHistory: historyCache });
+    await persistHistory(Boolean(cue.isFinal));
     chrome.runtime.sendMessage({
       type: "NEW_HISTORY_ENTRY",
       entry
     }).catch(() => {
     });
   }
-  function updateBadge() {
+  async function syncVideoCueTiming(params) {
+    const { cueId, replacedCueId, text, videoStartTime, videoEndTime, videoTitle, isFinal } = params;
+    let targetIdx = findHistoryIndexFromEnd(cueId);
+    const replacedIdx = replacedCueId ? findHistoryIndexFromEnd(replacedCueId) : -1;
+    if (replacedIdx !== -1 && targetIdx === -1) {
+      const targetEntry = historyCache[replacedIdx];
+      targetEntry.id = cueId;
+      if (text) targetEntry.text = text;
+      targetEntry.videoStartTime = videoStartTime;
+      targetEntry.videoEndTime = videoEndTime;
+      if (videoTitle) targetEntry.videoTitle = videoTitle;
+      if (isFinal !== void 0) targetEntry.isFinal = isFinal;
+      await persistHistory(Boolean(isFinal));
+      chrome.runtime.sendMessage({
+        type: "UPDATE_HISTORY_ENTRY",
+        entry: targetEntry
+      }).catch(() => {
+      });
+      return;
+    }
+    if (targetIdx === -1 && historyCache.length > 0) {
+      const last = historyCache[historyCache.length - 1];
+      if (Date.now() - last.receivedAt < 4e3) {
+        targetIdx = historyCache.length - 1;
+      }
+    }
+    if (targetIdx !== -1) {
+      const entry = historyCache[targetIdx];
+      entry.id = cueId;
+      if (text) entry.text = text;
+      entry.videoStartTime = videoStartTime;
+      entry.videoEndTime = videoEndTime;
+      if (videoTitle) entry.videoTitle = videoTitle;
+      if (isFinal !== void 0) entry.isFinal = isFinal;
+      await persistHistory(Boolean(isFinal));
+      chrome.runtime.sendMessage({
+        type: "UPDATE_HISTORY_ENTRY",
+        entry
+      }).catch(() => {
+      });
+    }
+  }
+  async function dropPausedHistoryCue(cueId, forceDelete) {
+    const idx = findHistoryIndexFromEnd(cueId);
+    if (idx !== -1) {
+      const target = historyCache[idx];
+      if (forceDelete || !target.isFinal) {
+        historyCache.splice(idx, 1);
+        await persistHistory(true);
+        chrome.runtime.sendMessage({
+          type: "HISTORY_CLEARED"
+        }).catch(() => {
+        });
+      }
+    }
+  }
+  async function clearHistory() {
+    historyCache = [];
+    await persistHistory(true);
+    chrome.runtime.sendMessage({ type: "HISTORY_CLEARED" }).catch(() => {
+    });
+  }
+  async function updateHistorySettings(patch) {
+    historySettings = { ...historySettings, ...patch };
+    await chrome.storage.local.set({ historySettings });
+    pruneHistory();
+  }
+
+  // src/background/cue-dispatcher.ts
+  var connectedContentPorts = /* @__PURE__ */ new Set();
+  function broadcastToTabs(message, ports = connectedContentPorts) {
+    if (ports.size > 0) {
+      for (const port of ports) {
+        try {
+          port.postMessage(message);
+        } catch {
+          ports.delete(port);
+        }
+      }
+      return;
+    }
+    try {
+      chrome.tabs.query({}, (tabs) => {
+        for (const tab of tabs) {
+          if (tab.id) {
+            chrome.tabs.sendMessage(tab.id, message).catch(() => {
+            });
+          }
+        }
+      });
+    } catch {
+    }
+  }
+  function dispatchCueFromBackground(cue, ports = connectedContentPorts) {
+    broadcastToTabs({ type: "NEW_SUBTITLE", cue }, ports);
+    addCueToHistory(cue);
+  }
+
+  // src/background/sse-client.ts
+  var SseClient = class {
+    eventSource = null;
+    isConnected = false;
+    reconnectTimer = null;
+    reconnectAttempts = 0;
+    callbacks;
+    constructor(callbacks) {
+      this.callbacks = callbacks;
+    }
+    get connected() {
+      return this.isConnected;
+    }
+    disconnect() {
+      if (this.eventSource) {
+        this.eventSource.close();
+        this.eventSource = null;
+      }
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.isConnected = false;
+      this.callbacks.onStatusChange(false);
+    }
+    connect(serverUrl, enabled) {
+      if (this.eventSource) {
+        this.eventSource.close();
+        this.eventSource = null;
+      }
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (!enabled) {
+        this.isConnected = false;
+        this.callbacks.onStatusChange(false);
+        return;
+      }
+      const sseUrl = `${serverUrl.replace(/\/+$/, "")}/events`;
+      console.log(`[whisper-cli-sub-injector] Connecting to SSE: ${sseUrl}`);
+      try {
+        this.eventSource = new EventSource(sseUrl);
+        this.eventSource.onopen = () => {
+          console.log(`[whisper-cli-sub-injector] Connected to ${sseUrl}`);
+          this.isConnected = true;
+          this.reconnectAttempts = 0;
+          this.callbacks.onStatusChange(true);
+        };
+        this.eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "ping") return;
+            const cue = {
+              id: data.id || Math.random().toString(36).substring(2, 9),
+              text: data.text || "",
+              timestamp: data.timestamp,
+              receivedAt: Date.now(),
+              clipStartMs: data.clipStartMs,
+              clipEndMs: data.clipEndMs,
+              durationMs: data.durationMs,
+              lagMs: data.lagMs,
+              isFinal: data.isFinal ?? true
+            };
+            if (cue.text.trim()) {
+              this.callbacks.onCueReceived(cue);
+            }
+          } catch (err) {
+            console.warn("[whisper-cli-sub-injector] Failed to parse SSE event data:", event.data, err);
+          }
+        };
+        this.eventSource.onerror = () => {
+          this.isConnected = false;
+          this.callbacks.onStatusChange(false);
+          if (this.eventSource) {
+            this.eventSource.close();
+            this.eventSource = null;
+          }
+          this.reconnectAttempts++;
+          const delay = Math.min(1e3 * Math.pow(1.5, this.reconnectAttempts), 5e3);
+          this.reconnectTimer = setTimeout(() => {
+            this.connect(serverUrl, enabled);
+          }, delay);
+        };
+      } catch (err) {
+        console.error("[whisper-cli-sub-injector] Error creating EventSource:", err);
+        this.isConnected = false;
+        this.callbacks.onStatusChange(false);
+        this.reconnectTimer = setTimeout(() => {
+          this.connect(serverUrl, enabled);
+        }, 3e3);
+      }
+    }
+  };
+
+  // src/background/background.ts
+  var currentSettings = { ...DEFAULT_SETTINGS };
+  var lastCue = null;
+  var sseClient = new SseClient({
+    onStatusChange: (connected) => {
+      updateBadge(connected);
+      notifyStatus(connected);
+    },
+    onCueReceived: (cue) => {
+      lastCue = cue;
+      dispatchCueFromBackground(cue);
+    }
+  });
+  async function loadSettings() {
+    return new Promise((resolve) => {
+      chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
+        currentSettings = { ...DEFAULT_SETTINGS, ...items };
+        resolve(currentSettings);
+      });
+    });
+  }
+  function updateBadge(connected = sseClient.connected) {
     if (!currentSettings.enabled) {
       chrome.action.setBadgeText({ text: "OFF" });
       chrome.action.setBadgeBackgroundColor({ color: "#777777" });
-    } else if (isConnected) {
+    } else if (connected) {
       chrome.action.setBadgeText({ text: "LIVE" });
       chrome.action.setBadgeBackgroundColor({ color: "#10B981" });
     } else {
-      chrome.action.setBadgeText({ text: "DISC" });
-      chrome.action.setBadgeBackgroundColor({ color: "#EF4444" });
+      chrome.action.setBadgeText({ text: "..." });
+      chrome.action.setBadgeBackgroundColor({ color: "#F59E0B" });
     }
-  }
-  function broadcastToTabs(message) {
-    chrome.tabs.query({}, (tabs) => {
-      for (const tab of tabs) {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, message).catch(() => {
-          });
-        }
-      }
-    });
   }
   function notifyStatus(connected) {
     chrome.runtime.sendMessage({
@@ -184,81 +405,12 @@
     });
   }
   function connectToEventSource() {
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
-    }
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    if (!currentSettings.enabled) {
-      isConnected = false;
-      updateBadge();
-      notifyStatus(false);
-      return;
-    }
-    const sseUrl = `${currentSettings.serverUrl.replace(/\/+$/, "")}/events`;
-    console.log(`[whisper-cli-sub-injector] Connecting to SSE: ${sseUrl}`);
-    try {
-      eventSource = new EventSource(sseUrl);
-      eventSource.onopen = () => {
-        console.log(`[whisper-cli-sub-injector] Connected to ${sseUrl}`);
-        isConnected = true;
-        reconnectAttempts = 0;
-        updateBadge();
-        notifyStatus(true);
-      };
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "ping") return;
-          const cue = {
-            id: data.id || Math.random().toString(36).substring(2, 9),
-            text: data.text || "",
-            timestamp: data.timestamp,
-            receivedAt: Date.now(),
-            clipStartMs: data.clipStartMs,
-            clipEndMs: data.clipEndMs,
-            durationMs: data.durationMs,
-            lagMs: data.lagMs,
-            isFinal: data.isFinal ?? true
-          };
-          if (cue.text.trim()) {
-            lastCue = cue;
-            addCueToHistory(cue);
-            broadcastToTabs({ type: "NEW_SUBTITLE", cue });
-          }
-        } catch (err) {
-          console.warn("[whisper-cli-sub-injector] Failed to parse SSE event data:", event.data, err);
-        }
-      };
-      eventSource.onerror = () => {
-        isConnected = false;
-        updateBadge();
-        notifyStatus(false);
-        if (eventSource) {
-          eventSource.close();
-          eventSource = null;
-        }
-        reconnectAttempts++;
-        const delay = Math.min(1e3 * Math.pow(1.5, reconnectAttempts), 5e3);
-        reconnectTimer = setTimeout(() => {
-          connectToEventSource();
-        }, delay);
-      };
-    } catch (err) {
-      console.error("[whisper-cli-sub-injector] Error creating EventSource:", err);
-      isConnected = false;
-      updateBadge();
-      notifyStatus(false);
-      reconnectTimer = setTimeout(connectToEventSource, 3e3);
-    }
+    sseClient.connect(currentSettings.serverUrl, currentSettings.enabled);
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "GET_STATUS") {
       sendResponse({
-        connected: isConnected,
+        connected: sseClient.connected,
         serverUrl: currentSettings.serverUrl,
         enabled: currentSettings.enabled,
         lastCue
@@ -280,21 +432,20 @@
       return true;
     }
     if (message.type === "RECONNECT") {
-      reconnectAttempts = 0;
       connectToEventSource();
-      sendResponse({ success: true, connected: isConnected });
+      sendResponse({ success: true, connected: sseClient.connected });
       return true;
     }
     if (message.type === "PING") {
-      sendResponse({ pong: true, connected: isConnected });
+      sendResponse({ pong: true, connected: sseClient.connected });
       return true;
     }
     if (message.type === "TAB_FOCUSED") {
-      if (currentSettings.enabled && !isConnected) {
+      if (currentSettings.enabled && !sseClient.connected) {
         connectToEventSource();
       }
       sendResponse({
-        connected: isConnected,
+        connected: sseClient.connected,
         lastCue,
         settings: currentSettings
       });
@@ -303,28 +454,23 @@
     if (message.type === "GET_HISTORY") {
       pruneHistory();
       sendResponse({
-        history: historyCache,
-        settings: historySettings
+        history: getHistoryCache(),
+        settings: getHistorySettings()
       });
       return true;
     }
     if (message.type === "GET_HISTORY_SETTINGS") {
-      sendResponse(historySettings);
+      sendResponse(getHistorySettings());
       return true;
     }
     if (message.type === "UPDATE_HISTORY_SETTINGS") {
-      historySettings = { ...historySettings, ...message.settings };
-      chrome.storage.local.set({ historySettings }, () => {
-        pruneHistory();
-        sendResponse({ success: true, settings: historySettings });
+      updateHistorySettings(message.settings).then(() => {
+        sendResponse({ success: true, settings: getHistorySettings() });
       });
       return true;
     }
     if (message.type === "CLEAR_HISTORY") {
-      historyCache = [];
-      chrome.storage.local.set({ subtitleHistory: [] }, () => {
-        chrome.runtime.sendMessage({ type: "HISTORY_CLEARED" }).catch(() => {
-        });
+      clearHistory().then(() => {
         sendResponse({ success: true });
       });
       return true;
@@ -335,88 +481,15 @@
       return true;
     }
     if (message.type === "SYNC_VIDEO_CUE_TIMING") {
-      const { cueId, replacedCueId, text, videoStartTime, videoEndTime, videoTitle, isFinal } = message;
-      let targetIdx = historyCache.findIndex((e) => e.id === cueId);
-      const replacedIdx = replacedCueId ? historyCache.findIndex((e) => e.id === replacedCueId) : -1;
-      if (replacedIdx !== -1 && targetIdx !== -1 && replacedIdx !== targetIdx) {
-        const targetEntry = historyCache[replacedIdx];
-        targetEntry.id = cueId;
-        targetEntry.text = text.trim() || targetEntry.text;
-        targetEntry.videoStartTime = videoStartTime;
-        targetEntry.videoEndTime = videoEndTime;
-        targetEntry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1e3));
-        if (videoTitle) targetEntry.videoTitle = videoTitle;
-        if (isFinal !== void 0) targetEntry.isFinal = isFinal;
-        historyCache.splice(targetIdx, 1);
-        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
-          chrome.runtime.sendMessage({
-            type: "UPDATE_HISTORY_ENTRY",
-            entry: targetEntry,
-            fullRefresh: true
-          }).catch(() => {
-          });
-          sendResponse({ success: true });
-        });
-        return true;
-      }
-      if (targetIdx === -1 && replacedIdx !== -1) {
-        targetIdx = replacedIdx;
-      }
-      if (targetIdx === -1 && historyCache.length > 0) {
-        const last = historyCache[historyCache.length - 1];
-        if (Date.now() - last.receivedAt < 6e3) {
-          targetIdx = historyCache.length - 1;
-        }
-      }
-      if (targetIdx !== -1) {
-        const entry = historyCache[targetIdx];
-        if (videoEndTime <= 0.3 && entry.videoEndTime && entry.videoEndTime > 0.5) {
-          sendResponse({ success: false });
-          return true;
-        }
-        entry.id = cueId;
-        if (text.trim()) entry.text = text.trim();
-        entry.videoStartTime = videoStartTime;
-        entry.videoEndTime = videoEndTime;
-        entry.durationMs = Math.max(100, Math.round((videoEndTime - videoStartTime) * 1e3));
-        if (videoTitle) entry.videoTitle = videoTitle;
-        if (isFinal !== void 0) entry.isFinal = isFinal;
-        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
-          chrome.runtime.sendMessage({
-            type: "UPDATE_HISTORY_ENTRY",
-            entry
-          }).catch(() => {
-          });
-          sendResponse({ success: true });
-        });
-      } else {
-        sendResponse({ success: false });
-      }
+      syncVideoCueTiming(message).then(() => {
+        sendResponse({ success: true });
+      });
       return true;
     }
     if (message.type === "DROP_PAUSED_HISTORY_CUE") {
-      const idx = historyCache.findIndex((e) => e.id === message.cueId);
-      if (idx !== -1) {
-        const target = historyCache[idx];
-        if (!message.forceDelete && target.videoEndTime && target.videoEndTime > 0.5) {
-          sendResponse({ success: false });
-          return true;
-        }
-        historyCache.splice(idx, 1);
-        if (lastCue && lastCue.id === message.cueId) {
-          lastCue = historyCache.length > 0 ? { ...historyCache[historyCache.length - 1] } : null;
-        }
-        chrome.storage.local.set({ subtitleHistory: historyCache }, () => {
-          chrome.runtime.sendMessage({
-            type: "UPDATE_HISTORY_ENTRY",
-            fullRefresh: true
-          }).catch(() => {
-          });
-          sendResponse({ success: true });
-        });
-      } else {
-        sendResponse({ success: false });
-      }
+      dropPausedHistoryCue(message.cueId, message.forceDelete).then(() => {
+        sendResponse({ success: true });
+      });
       return true;
     }
   });
@@ -424,8 +497,12 @@
     pruneHistory();
   }, 5 * 60 * 1e3);
   chrome.runtime.onConnect.addListener((port) => {
-    if (port.name === "whisper-keepalive") {
-      if (currentSettings.enabled && !isConnected) {
+    if (port.name === "whisper-keepalive" || port.name === "content-keepalive") {
+      connectedContentPorts.add(port);
+      port.onDisconnect.addListener(() => {
+        connectedContentPorts.delete(port);
+      });
+      if (currentSettings.enabled && !sseClient.connected) {
         console.log("[whisper-cli-sub-injector] Port connected; ensuring SSE connection");
         connectToEventSource();
       }
@@ -433,7 +510,7 @@
   });
   if (chrome.tabs?.onActivated) {
     chrome.tabs.onActivated.addListener(async (activeInfo) => {
-      if (currentSettings.enabled && !isConnected) {
+      if (currentSettings.enabled && !sseClient.connected) {
         console.log("[whisper-cli-sub-injector] Tab switched; auto-reconnecting SSE");
         connectToEventSource();
       }
@@ -442,7 +519,7 @@
           type: "TAB_ACTIVATED",
           settings: currentSettings,
           lastCue,
-          connected: isConnected
+          connected: sseClient.connected
         }).catch(() => {
         });
       } catch {
@@ -453,7 +530,7 @@
     chrome.alarms.create("whisper-watchdog", { periodInMinutes: 0.5 });
     chrome.alarms.onAlarm.addListener((alarm) => {
       if (alarm.name === "whisper-watchdog") {
-        if (currentSettings.enabled && !isConnected) {
+        if (currentSettings.enabled && !sseClient.connected) {
           console.log("[whisper-cli-sub-injector] Watchdog alarm reconnecting SSE");
           connectToEventSource();
         }

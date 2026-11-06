@@ -6,7 +6,8 @@
     "build": "node build.js",
     "build:chrome": "node build.js chrome",
     "build:firefox": "node build.js firefox",
-    "watch": "NODE_ENV=development node build.js"
+    "watch": "NODE_ENV=development node build.js",
+    "bench": "npx esbuild benchmarks/run_benchmarks.ts --bundle --platform=node --outfile=benchmarks/run_benchmarks.js && node benchmarks/run_benchmarks.js && rm -f benchmarks/run_benchmarks.js"
   },
   "keywords": [
     "whisper",

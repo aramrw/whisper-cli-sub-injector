@@ -102,6 +102,11 @@
         statusText.textContent = "Disconnected";
       }
     }
+    function saveSetting(patch) {
+      chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: patch }, () => {
+        showSavedToast();
+      });
+    }
     function populateSettingsUI(s) {
       exactByteTimingCheckbox.checked = s.exactByteTiming ?? true;
       splitMultiSentenceCheckbox.checked = s.splitMultiSentenceCues ?? true;
@@ -144,9 +149,159 @@
       fadeTimeoutVal.textContent = `${fadeSecs}s`;
       serverUrlInput.value = s.serverUrl;
     }
-    function saveSetting(patch) {
-      chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: patch }, () => {
-        showSavedToast();
+    function bindTimingSection() {
+      exactByteTimingCheckbox.addEventListener("change", () => {
+        saveSetting({ exactByteTiming: exactByteTimingCheckbox.checked });
+      });
+      splitMultiSentenceCheckbox.addEventListener("change", () => {
+        saveSetting({ splitMultiSentenceCues: splitMultiSentenceCheckbox.checked });
+      });
+      enableSubCacheCheckbox.addEventListener("change", () => {
+        saveSetting({ enableSubtitleCache: enableSubCacheCheckbox.checked });
+      });
+      cementSubtitlesCheckbox.addEventListener("change", () => {
+        saveSetting({ cementSubtitlesInTimeline: cementSubtitlesCheckbox.checked });
+      });
+      showRerecordBtnCheckbox.addEventListener("change", () => {
+        saveSetting({ showRerecordButton: showRerecordBtnCheckbox.checked });
+      });
+      showPrevBtnCheckbox.addEventListener("change", () => {
+        saveSetting({ showPrevButton: showPrevBtnCheckbox.checked });
+      });
+      showNextBtnCheckbox.addEventListener("change", () => {
+        saveSetting({ showNextButton: showNextBtnCheckbox.checked });
+      });
+      autoHealOverlapsCheckbox.addEventListener("change", () => {
+        saveSetting({ autoHealTimelineOverlaps: autoHealOverlapsCheckbox.checked });
+      });
+      srtStartPaddingInput.addEventListener("input", () => {
+        srtStartPaddingVal.textContent = `${srtStartPaddingInput.value}ms`;
+        saveSetting({ srtStartPaddingMs: Number(srtStartPaddingInput.value) });
+      });
+      srtEndPaddingInput.addEventListener("input", () => {
+        srtEndPaddingVal.textContent = `${srtEndPaddingInput.value}ms`;
+        saveSetting({ srtEndPaddingMs: Number(srtEndPaddingInput.value) });
+      });
+      clearCacheBtn.addEventListener("click", () => {
+        clearCacheBtn.disabled = true;
+        clearCacheBtn.textContent = "Clearing...";
+        chrome.runtime.sendMessage({ type: "CLEAR_TIMELINE_CACHE" }, () => {
+          clearCacheBtn.textContent = "\u2713 Timeline Cache Cleared!";
+          showSavedToast("\u2713 Cache Cleared");
+          setTimeout(() => {
+            clearCacheBtn.textContent = "\u{1F5D1}\uFE0F Clear Video Timeline Cache";
+            clearCacheBtn.disabled = false;
+          }, 1400);
+        });
+      });
+    }
+    function bindPlaybackSection() {
+      ignoreWhenPausedCheckbox.addEventListener("change", () => {
+        saveSetting({ ignoreSubtitlesWhenPaused: ignoreWhenPausedCheckbox.checked });
+      });
+      pauseWithVideoCheckbox.addEventListener("change", () => {
+        saveSetting({ pauseSubtitlesWithVideo: pauseWithVideoCheckbox.checked });
+      });
+      autoEmbedCheckbox.addEventListener("change", () => {
+        saveSetting({ autoEmbed: autoEmbedCheckbox.checked });
+      });
+    }
+    function bindSmartReplaySection() {
+      subNavEnabledCheckbox.addEventListener("change", () => {
+        saveSetting({ subNavigationEnabled: subNavEnabledCheckbox.checked });
+      });
+      subForwardNavEnabledCheckbox.addEventListener("change", () => {
+        saveSetting({ subForwardNavigationEnabled: subForwardNavEnabledCheckbox.checked });
+      });
+      subNavPlayCheckbox.addEventListener("change", () => {
+        saveSetting({ subNavigationPlayOnSeek: subNavPlayCheckbox.checked });
+      });
+      subNavPaddingInput.addEventListener("input", () => {
+        subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
+        saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
+      });
+    }
+    function bindAppearanceSection() {
+      fontSizeInput.addEventListener("input", () => {
+        fontSizeVal.textContent = `${fontSizeInput.value}px`;
+        saveSetting({ fontSize: Number(fontSizeInput.value) });
+      });
+      alignmentSelect.addEventListener("change", () => {
+        saveSetting({ alignment: alignmentSelect.value });
+      });
+      bottomOffsetInput.addEventListener("input", () => {
+        bottomOffsetVal.textContent = `${bottomOffsetInput.value}px`;
+        saveSetting({ bottomOffset: Number(bottomOffsetInput.value) });
+      });
+      topOffsetInput.addEventListener("input", () => {
+        topOffsetVal.textContent = `${topOffsetInput.value}px`;
+        saveSetting({ topOffset: Number(topOffsetInput.value) });
+      });
+      bgBoxCheckbox.addEventListener("change", () => {
+        saveSetting({ showBackgroundBox: bgBoxCheckbox.checked });
+      });
+      stackModeCheckbox.addEventListener("change", () => {
+        saveSetting({ stackMode: stackModeCheckbox.checked });
+      });
+      maxLinesInput.addEventListener("input", () => {
+        maxLinesVal.textContent = maxLinesInput.value;
+        saveSetting({ maxLines: Number(maxLinesInput.value) });
+      });
+      fadeTimeoutInput.addEventListener("input", () => {
+        fadeTimeoutVal.textContent = `${fadeTimeoutInput.value}s`;
+        saveSetting({ autoFadeTimeoutMs: Number(fadeTimeoutInput.value) * 1e3 });
+      });
+    }
+    function triggerReconnect() {
+      const url = serverUrlInput.value.trim();
+      statusText.textContent = "Connecting...";
+      saveSetting({ serverUrl: url });
+      chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
+        setTimeout(() => {
+          chrome.runtime.sendMessage({ type: "GET_STATUS" }, (st) => {
+            if (st) updateStatus(st.connected);
+          });
+        }, 600);
+      });
+    }
+    function bindServerHistorySection() {
+      connectBtn.addEventListener("click", triggerReconnect);
+      retryBtn.addEventListener("click", triggerReconnect);
+      retentionSelect.addEventListener("change", () => {
+        const duration = retentionSelect.value;
+        chrome.runtime.sendMessage(
+          { type: "UPDATE_HISTORY_SETTINGS", settings: { retentionDuration: duration } },
+          () => showSavedToast()
+        );
+      });
+      maxEntriesSelect.addEventListener("change", () => {
+        const maxEntries = Number(maxEntriesSelect.value);
+        chrome.runtime.sendMessage(
+          { type: "UPDATE_HISTORY_SETTINGS", settings: { maxEntries } },
+          () => showSavedToast()
+        );
+      });
+      resetDefaultsBtn.addEventListener("click", () => {
+        if (!window.confirm("Reset all Whisper Live Subtitles settings to their default values?")) {
+          return;
+        }
+        populateSettingsUI(DEFAULT_SETTINGS);
+        retentionSelect.value = DEFAULT_HISTORY_SETTINGS.retentionDuration;
+        maxEntriesSelect.value = String(DEFAULT_HISTORY_SETTINGS.maxEntries);
+        chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: DEFAULT_SETTINGS }, () => {
+          chrome.runtime.sendMessage(
+            { type: "UPDATE_HISTORY_SETTINGS", settings: DEFAULT_HISTORY_SETTINGS },
+            () => showSavedToast("\u2713 Defaults Restored")
+          );
+        });
+      });
+      openHistoryBtn.addEventListener("click", () => {
+        chrome.tabs.create({ url: chrome.runtime.getURL("history.html") });
+      });
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg.type === "SERVER_STATUS") {
+          updateStatus(msg.connected);
+        }
       });
     }
     chrome.runtime.sendMessage({ type: "GET_SETTINGS" }, (settings) => {
@@ -165,160 +320,10 @@
         updateStatus(status.connected);
       }
     });
-    exactByteTimingCheckbox.addEventListener("change", () => {
-      saveSetting({ exactByteTiming: exactByteTimingCheckbox.checked });
-    });
-    splitMultiSentenceCheckbox.addEventListener("change", () => {
-      saveSetting({ splitMultiSentenceCues: splitMultiSentenceCheckbox.checked });
-    });
-    enableSubCacheCheckbox.addEventListener("change", () => {
-      saveSetting({ enableSubtitleCache: enableSubCacheCheckbox.checked });
-    });
-    cementSubtitlesCheckbox.addEventListener("change", () => {
-      saveSetting({ cementSubtitlesInTimeline: cementSubtitlesCheckbox.checked });
-    });
-    showRerecordBtnCheckbox.addEventListener("change", () => {
-      saveSetting({ showRerecordButton: showRerecordBtnCheckbox.checked });
-    });
-    showPrevBtnCheckbox.addEventListener("change", () => {
-      saveSetting({ showPrevButton: showPrevBtnCheckbox.checked });
-    });
-    showNextBtnCheckbox.addEventListener("change", () => {
-      saveSetting({ showNextButton: showNextBtnCheckbox.checked });
-    });
-    autoHealOverlapsCheckbox.addEventListener("change", () => {
-      saveSetting({ autoHealTimelineOverlaps: autoHealOverlapsCheckbox.checked });
-    });
-    srtStartPaddingInput.addEventListener("input", () => {
-      srtStartPaddingVal.textContent = `${srtStartPaddingInput.value}ms`;
-      saveSetting({ srtStartPaddingMs: Number(srtStartPaddingInput.value) });
-    });
-    srtEndPaddingInput.addEventListener("input", () => {
-      srtEndPaddingVal.textContent = `${srtEndPaddingInput.value}ms`;
-      saveSetting({ srtEndPaddingMs: Number(srtEndPaddingInput.value) });
-    });
-    clearCacheBtn.addEventListener("click", () => {
-      clearCacheBtn.disabled = true;
-      clearCacheBtn.textContent = "Clearing...";
-      chrome.runtime.sendMessage({ type: "CLEAR_TIMELINE_CACHE" }, () => {
-        clearCacheBtn.textContent = "\u2713 Timeline Cache Cleared!";
-        showSavedToast("\u2713 Cache Cleared");
-        setTimeout(() => {
-          clearCacheBtn.textContent = "\u{1F5D1}\uFE0F Clear Video Timeline Cache";
-          clearCacheBtn.disabled = false;
-        }, 1400);
-      });
-    });
-    ignoreWhenPausedCheckbox.addEventListener("change", () => {
-      saveSetting({ ignoreSubtitlesWhenPaused: ignoreWhenPausedCheckbox.checked });
-    });
-    pauseWithVideoCheckbox.addEventListener("change", () => {
-      saveSetting({ pauseSubtitlesWithVideo: pauseWithVideoCheckbox.checked });
-    });
-    autoEmbedCheckbox.addEventListener("change", () => {
-      saveSetting({ autoEmbed: autoEmbedCheckbox.checked });
-    });
-    subNavEnabledCheckbox.addEventListener("change", () => {
-      saveSetting({ subNavigationEnabled: subNavEnabledCheckbox.checked });
-    });
-    subForwardNavEnabledCheckbox.addEventListener("change", () => {
-      saveSetting({ subForwardNavigationEnabled: subForwardNavEnabledCheckbox.checked });
-    });
-    subNavPlayCheckbox.addEventListener("change", () => {
-      saveSetting({ subNavigationPlayOnSeek: subNavPlayCheckbox.checked });
-    });
-    subNavPaddingInput.addEventListener("input", () => {
-      subNavPaddingVal.textContent = `${subNavPaddingInput.value}ms`;
-      saveSetting({ subNavigationPaddingMs: Number(subNavPaddingInput.value) });
-    });
-    fontSizeInput.addEventListener("input", () => {
-      fontSizeVal.textContent = `${fontSizeInput.value}px`;
-      saveSetting({ fontSize: Number(fontSizeInput.value) });
-    });
-    alignmentSelect.addEventListener("change", () => {
-      saveSetting({ alignment: alignmentSelect.value });
-    });
-    bottomOffsetInput.addEventListener("input", () => {
-      bottomOffsetVal.textContent = `${bottomOffsetInput.value}px`;
-      saveSetting({ bottomOffset: Number(bottomOffsetInput.value) });
-    });
-    topOffsetInput.addEventListener("input", () => {
-      topOffsetVal.textContent = `${topOffsetInput.value}px`;
-      saveSetting({ topOffset: Number(topOffsetInput.value) });
-    });
-    bgBoxCheckbox.addEventListener("change", () => {
-      saveSetting({ showBackgroundBox: bgBoxCheckbox.checked });
-    });
-    stackModeCheckbox.addEventListener("change", () => {
-      saveSetting({ stackMode: stackModeCheckbox.checked });
-    });
-    maxLinesInput.addEventListener("input", () => {
-      maxLinesVal.textContent = maxLinesInput.value;
-      saveSetting({ maxLines: Number(maxLinesInput.value) });
-    });
-    fadeTimeoutInput.addEventListener("input", () => {
-      fadeTimeoutVal.textContent = `${fadeTimeoutInput.value}s`;
-      saveSetting({ autoFadeTimeoutMs: Number(fadeTimeoutInput.value) * 1e3 });
-    });
-    connectBtn.addEventListener("click", () => {
-      const url = serverUrlInput.value.trim();
-      statusText.textContent = "Connecting...";
-      saveSetting({ serverUrl: url });
-      chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
-        setTimeout(() => {
-          chrome.runtime.sendMessage({ type: "GET_STATUS" }, (st) => {
-            if (st) updateStatus(st.connected);
-          });
-        }, 600);
-      });
-    });
-    retryBtn.addEventListener("click", () => {
-      const url = serverUrlInput.value.trim();
-      statusText.textContent = "Retrying...";
-      saveSetting({ serverUrl: url });
-      chrome.runtime.sendMessage({ type: "RECONNECT" }, () => {
-        setTimeout(() => {
-          chrome.runtime.sendMessage({ type: "GET_STATUS" }, (st) => {
-            if (st) updateStatus(st.connected);
-          });
-        }, 600);
-      });
-    });
-    retentionSelect.addEventListener("change", () => {
-      const duration = retentionSelect.value;
-      chrome.runtime.sendMessage(
-        { type: "UPDATE_HISTORY_SETTINGS", settings: { retentionDuration: duration } },
-        () => showSavedToast()
-      );
-    });
-    maxEntriesSelect.addEventListener("change", () => {
-      const maxEntries = Number(maxEntriesSelect.value);
-      chrome.runtime.sendMessage(
-        { type: "UPDATE_HISTORY_SETTINGS", settings: { maxEntries } },
-        () => showSavedToast()
-      );
-    });
-    resetDefaultsBtn.addEventListener("click", () => {
-      if (!window.confirm("Reset all Whisper Live Subtitles settings to their default values?")) {
-        return;
-      }
-      populateSettingsUI(DEFAULT_SETTINGS);
-      retentionSelect.value = DEFAULT_HISTORY_SETTINGS.retentionDuration;
-      maxEntriesSelect.value = String(DEFAULT_HISTORY_SETTINGS.maxEntries);
-      chrome.runtime.sendMessage({ type: "UPDATE_SETTINGS", settings: DEFAULT_SETTINGS }, () => {
-        chrome.runtime.sendMessage(
-          { type: "UPDATE_HISTORY_SETTINGS", settings: DEFAULT_HISTORY_SETTINGS },
-          () => showSavedToast("\u2713 Defaults Restored")
-        );
-      });
-    });
-    openHistoryBtn.addEventListener("click", () => {
-      chrome.tabs.create({ url: chrome.runtime.getURL("history.html") });
-    });
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.type === "SERVER_STATUS") {
-        updateStatus(msg.connected);
-      }
-    });
+    bindTimingSection();
+    bindPlaybackSection();
+    bindSmartReplaySection();
+    bindAppearanceSection();
+    bindServerHistorySection();
   });
 })();

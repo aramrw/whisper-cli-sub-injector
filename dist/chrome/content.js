@@ -34,7 +34,72 @@
     autoEmbed: true
   };
 
-  // src/content/overlay.ts
+  // src/content/overlay/toolbar.ts
+  function createOverlayToolbar(onPrev, onRerecord, onNext) {
+    const toolbarContainer = document.createElement("div");
+    toolbarContainer.className = "whisper-cli-sub-toolbar";
+    toolbarContainer.style.setProperty("display", "none", "important");
+    toolbarContainer.style.setProperty("justify-content", "center", "important");
+    toolbarContainer.style.setProperty("align-items", "center", "important");
+    toolbarContainer.style.setProperty("gap", "6px", "important");
+    toolbarContainer.style.setProperty("pointer-events", "none", "important");
+    const prevBtn = createToolbarButton("\u23EE Prev", "Previous subtitle (Left Arrow)", onPrev);
+    const rerecordBtn = createToolbarButton(
+      "\u{1F504} Re-record Line",
+      "Uncement & re-record this subtitle line from its start (Alt+R)",
+      onRerecord
+    );
+    const nextBtn = createToolbarButton("Next \u23ED", "Next subtitle (Right Arrow)", onNext);
+    toolbarContainer.appendChild(prevBtn);
+    toolbarContainer.appendChild(rerecordBtn);
+    toolbarContainer.appendChild(nextBtn);
+    return { toolbarContainer, prevBtn, rerecordBtn, nextBtn };
+  }
+  function createToolbarButton(label, title, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "whisper-cli-sub-rerecord-btn";
+    btn.title = title;
+    btn.textContent = label;
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+  function updateToolbarState(elements, video, settings2, hasActiveCues, rerecordWindow, hasPrevSubtitle, hasNextSubtitle) {
+    const { toolbarContainer, prevBtn, rerecordBtn, nextBtn } = elements;
+    if (!toolbarContainer || !rerecordBtn || !prevBtn || !nextBtn) return;
+    const isRerecording = Boolean(rerecordWindow && Date.now() < rerecordWindow.expiresAt);
+    if (isRerecording) {
+      prevBtn.style.setProperty("display", "none", "important");
+      nextBtn.style.setProperty("display", "none", "important");
+      rerecordBtn.style.setProperty("display", "inline-flex", "important");
+      rerecordBtn.textContent = "\u{1F399}\uFE0F Re-recording line...";
+      toolbarContainer.style.setProperty("display", "flex", "important");
+      return;
+    }
+    rerecordBtn.textContent = "\u{1F504} Re-record Line";
+    if (!video.paused || !hasActiveCues) {
+      toolbarContainer.style.setProperty("display", "none", "important");
+      return;
+    }
+    const showPrev = (settings2.showPrevButton ?? true) && hasPrevSubtitle();
+    const showRerecord = settings2.showRerecordButton ?? true;
+    const showNext = (settings2.showNextButton ?? true) && hasNextSubtitle();
+    prevBtn.style.setProperty("display", showPrev ? "inline-flex" : "none", "important");
+    rerecordBtn.style.setProperty("display", showRerecord ? "inline-flex" : "none", "important");
+    nextBtn.style.setProperty("display", showNext ? "inline-flex" : "none", "important");
+    const shouldShow = showPrev || showRerecord || showNext;
+    toolbarContainer.style.setProperty("display", shouldShow ? "flex" : "none", "important");
+  }
+
+  // src/content/overlay/styles.ts
   var styleSheetInjected = false;
   function ensureSelectionStyle() {
     if (styleSheetInjected) return;
@@ -84,14 +149,334 @@
     (document.head || document.documentElement).appendChild(style);
     styleSheetInjected = true;
   }
+  function applyOverlayStyles(container, stackContainer, settings2) {
+    const fontFam = settings2.fontFamily || 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+    container.style.fontFamily = fontFam;
+    const fSize = settings2.fontSize || 24;
+    container.style.fontSize = `${fSize}px`;
+    if (settings2.alignment === "left") {
+      container.style.alignItems = "flex-start";
+      stackContainer.style.alignItems = "flex-start";
+    } else if (settings2.alignment === "right") {
+      container.style.alignItems = "flex-end";
+      stackContainer.style.alignItems = "flex-end";
+    } else {
+      container.style.alignItems = "center";
+      stackContainer.style.alignItems = "center";
+    }
+  }
+
+  // src/content/overlay/stack-renderer.ts
+  function isNodeSelected(node) {
+    try {
+      if (typeof window === "undefined" || typeof window.getSelection !== "function") {
+        return false;
+      }
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+      return node.contains(sel.anchorNode) || node.contains(sel.focusNode);
+    } catch {
+      return false;
+    }
+  }
+  function renderSubtitleStack(stackContainer, activeCues, settings2) {
+    const total = activeCues.length;
+    if (total === 0) {
+      if (stackContainer.children.length > 0) {
+        stackContainer.innerHTML = "";
+      }
+      return;
+    }
+    const settingsSig = `${settings2.fontSize}|${settings2.textColor}|${settings2.backgroundColor}|${settings2.outlineColor}|${settings2.showBackgroundBox}`;
+    const existingById = /* @__PURE__ */ new Map();
+    const currentChildren = Array.from(stackContainer.children);
+    const targetIds = new Set(activeCues.map((c) => c.id));
+    for (const child of currentChildren) {
+      const id = child.dataset?.cueId;
+      if (id && targetIds.has(id) && !existingById.has(id)) {
+        existingById.set(id, child);
+      } else if (stackContainer.removeChild) {
+        stackContainer.removeChild(child);
+      }
+    }
+    for (let i = 0; i < total; i++) {
+      const cue = activeCues[i];
+      const age = total - 1 - i;
+      const ageStr = String(age);
+      let item = existingById.get(cue.id);
+      const isNewNode = !item;
+      if (!item) {
+        item = document.createElement("div");
+        item.className = "whisper-cli-sub-item";
+        item.dataset.cueId = cue.id;
+        item.textContent = cue.text;
+      } else {
+        if (item.textContent !== cue.text && !isNodeSelected(item)) {
+          item.textContent = cue.text;
+        }
+      }
+      if (isNewNode || item.dataset.renderedAge !== ageStr || item.dataset.settingsSig !== settingsSig) {
+        item.dataset.renderedAge = ageStr;
+        item.dataset.settingsSig = settingsSig;
+        let opacity = 1;
+        let scale = 1;
+        if (age === 1) {
+          opacity = 0.68;
+          scale = 0.85;
+        } else if (age === 2) {
+          opacity = 0.42;
+          scale = 0.72;
+        } else if (age >= 3) {
+          opacity = 0.25;
+          scale = 0.6;
+        }
+        const itemFontSize = Math.max(13, Math.round(settings2.fontSize * scale));
+        item.style.setProperty("font-size", `${itemFontSize}px`, "important");
+        item.style.setProperty("opacity", String(opacity), "important");
+        item.style.setProperty("color", settings2.textColor, "important");
+        item.style.setProperty(
+          "font-family",
+          'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          "important"
+        );
+        item.style.setProperty("font-weight", age === 0 ? "600" : "500", "important");
+        item.style.setProperty("line-height", "1.35", "important");
+        item.style.setProperty("text-align", "center", "important");
+        item.style.setProperty("user-select", "text", "important");
+        item.style.setProperty("-webkit-user-select", "text", "important");
+        item.style.setProperty("pointer-events", "auto", "important");
+        item.style.setProperty("cursor", "text", "important");
+        item.style.setProperty("transition", "all 0.25s cubic-bezier(0.16, 1, 0.3, 1)", "important");
+        item.style.setProperty("display", "inline-block", "important");
+        item.style.setProperty("word-break", "break-word", "important");
+        if (settings2.showBackgroundBox) {
+          item.style.setProperty("background", settings2.backgroundColor, "important");
+          item.style.setProperty("padding", age === 0 ? "6px 14px" : "4px 10px", "important");
+          item.style.setProperty("border-radius", "6px", "important");
+          item.style.setProperty("box-shadow", "0 2px 8px rgba(0, 0, 0, 0.4)", "important");
+          item.style.setProperty(
+            "text-shadow",
+            `0 1px 2px ${settings2.outlineColor}, 0 0 1px ${settings2.outlineColor}`,
+            "important"
+          );
+        } else {
+          item.style.setProperty("background", "transparent", "important");
+          item.style.setProperty("padding", "0", "important");
+          item.style.setProperty(
+            "text-shadow",
+            `-2px -2px 0 ${settings2.outlineColor}, 2px -2px 0 ${settings2.outlineColor}, -2px 2px 0 ${settings2.outlineColor}, 2px 2px 0 ${settings2.outlineColor}, 0 2px 6px rgba(0,0,0,0.85)`,
+            "important"
+          );
+        }
+      }
+      if (isNewNode || stackContainer.children[i] !== item) {
+        stackContainer.appendChild(item);
+      }
+    }
+  }
+
+  // src/content/overlay/position.ts
+  function updateOverlayPosition(container, video, settings2) {
+    const rect = video.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      container.style.display = "none";
+      return;
+    }
+    container.style.setProperty("display", "flex", "important");
+    const fsElement = document.fullscreenElement;
+    const isFs = Boolean(fsElement && (fsElement.contains(video) || fsElement === video));
+    let centerX;
+    let targetY;
+    if (isFs) {
+      const fsRect = fsElement.getBoundingClientRect();
+      centerX = rect.left - fsRect.left + rect.width / 2;
+      if (settings2.alignment === "top") {
+        targetY = rect.top - fsRect.top + settings2.topOffset;
+      } else {
+        targetY = rect.top - fsRect.top + rect.height - settings2.bottomOffset;
+      }
+    } else {
+      const scrollX = window.scrollX || window.pageXOffset;
+      const scrollY = window.scrollY || window.pageYOffset;
+      centerX = rect.left + rect.width / 2 + scrollX;
+      if (settings2.alignment === "top") {
+        targetY = rect.top + settings2.topOffset + scrollY;
+      } else {
+        targetY = rect.top + rect.height - settings2.bottomOffset + scrollY;
+      }
+    }
+    const maxWidth = Math.max(200, Math.min(rect.width * 0.9, window.innerWidth * 0.92));
+    const isTop = settings2.alignment === "top";
+    const transformVal = isTop ? "translateX(-50%)" : "translate(-50%, -100%)";
+    container.style.setProperty("left", `${centerX}px`, "important");
+    container.style.setProperty("top", `${targetY}px`, "important");
+    container.style.setProperty("transform", transformVal, "important");
+    container.style.setProperty("max-width", `${maxWidth}px`, "important");
+  }
+
+  // src/content/overlay/timeline-manager.ts
+  function splitIntoSentenceParts(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    const parts = trimmed.split(/(?<=[.!?。！？…]["”'’»)」』】]?)\s+|(?<=[。！？…])(?=[^\s。！？…])/u).map((s) => s.trim()).filter((s) => s.length >= 2);
+    return parts.length > 1 ? parts : [trimmed];
+  }
+  function getSafeSeekTime(video, rawSeekTime) {
+    let safeTime = Math.max(0.08, rawSeekTime);
+    try {
+      const buffered = video.buffered;
+      if (buffered && buffered.length > 0) {
+        for (let i = 0; i < buffered.length; i++) {
+          const bStart = buffered.start(i);
+          const bEnd = buffered.end(i);
+          if (safeTime >= bStart && safeTime <= bEnd) {
+            return safeTime;
+          }
+          if (safeTime < bStart && bStart - safeTime < 0.45) {
+            return bStart + 0.02;
+          }
+        }
+      }
+    } catch {
+    }
+    return safeTime;
+  }
+  function estimateCueTiming(cue, video, settings2, pausedAt, utteranceAnchors) {
+    const cleanText = cue.text.trim();
+    const nowVideo = video.currentTime;
+    const playbackRate = video.playbackRate > 0 ? video.playbackRate : 1;
+    const pausedDuringLagSec = video.paused && pausedAt > 0 ? Math.max(0, (Date.now() - pausedAt) / 1e3) : 0;
+    const startPadSec = Math.max(0, (settings2.srtStartPaddingMs ?? 50) / 1e3);
+    const endPadSec = Math.max(0, (settings2.srtEndPaddingMs ?? 100) / 1e3);
+    const hasExactCliTiming = (settings2.exactByteTiming ?? true) && (cue.durationMs !== void 0 || cue.clipStartMs !== void 0);
+    if (hasExactCliTiming) {
+      const rawLagSec = cue.lagMs !== void 0 && cue.lagMs >= 0 ? cue.lagMs / 1e3 : 0.05;
+      const effectiveLagSec2 = Math.max(0, rawLagSec - pausedDuringLagSec);
+      const clipDurSec = Math.max(
+        0.12,
+        (cue.durationMs && cue.durationMs > 0 ? cue.durationMs : 250) / 1e3 * playbackRate
+      );
+      const rawEnd = Math.max(0, nowVideo - effectiveLagSec2 * playbackRate);
+      let rawStart = Math.max(0, rawEnd - clipDurSec);
+      const existingAnchor = utteranceAnchors.get(cue.id);
+      if (!existingAnchor) {
+        utteranceAnchors.set(cue.id, {
+          id: cue.id,
+          rawVideoStart: rawStart,
+          firstClipStartMs: cue.clipStartMs
+        });
+        if (utteranceAnchors.size > 48) {
+          const oldestKey = utteranceAnchors.keys().next().value;
+          if (oldestKey) utteranceAnchors.delete(oldestKey);
+        }
+      } else {
+        if (cue.isFinal && Math.abs(rawStart - existingAnchor.rawVideoStart) < 4) {
+          existingAnchor.rawVideoStart = rawStart;
+        } else if (cue.clipStartMs !== void 0 && existingAnchor.firstClipStartMs !== void 0) {
+          const deltaSec = (cue.clipStartMs - existingAnchor.firstClipStartMs) / 1e3 * playbackRate;
+          if (Math.abs(deltaSec) < 2) {
+            rawStart = Math.max(0, existingAnchor.rawVideoStart + deltaSec);
+          } else {
+            rawStart = Math.min(existingAnchor.rawVideoStart, rawStart);
+          }
+        } else {
+          rawStart = Math.min(existingAnchor.rawVideoStart, rawStart);
+        }
+      }
+      const estimatedStart2 = Math.max(0, rawStart - startPadSec);
+      const estimatedEnd2 = Math.max(estimatedStart2 + 0.2, rawEnd + endPadSec);
+      return { estimatedStart: estimatedStart2, estimatedEnd: estimatedEnd2 };
+    }
+    const textSec = Math.max(1.8, cleanText.length / 13);
+    const chunkSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1e3 : 0;
+    const durSec = Math.max(chunkSec, textSec);
+    const lagSec = cue.lagMs !== void 0 && cue.lagMs >= 0 ? cue.lagMs / 1e3 : 0.75;
+    const effectiveLagSec = Math.max(0, lagSec - pausedDuringLagSec);
+    const estimatedEnd = Math.max(0, nowVideo - effectiveLagSec * playbackRate + endPadSec);
+    const estimatedStart = Math.max(0, estimatedEnd - durSec * playbackRate - startPadSec);
+    return { estimatedStart, estimatedEnd };
+  }
+  function findPreviousSubtitleCue(timeline, vPos, padSec, lastSeekTargetId, lastSeekWallTime) {
+    let targetCue = null;
+    let targetIndex = -1;
+    const nowWall = Date.now();
+    if (lastSeekTargetId && nowWall - lastSeekWallTime < 1400) {
+      const prevIdx = timeline.findIndex((c) => c.id === lastSeekTargetId);
+      if (prevIdx > 0) {
+        const candidate = timeline[prevIdx - 1];
+        const current = timeline[prevIdx];
+        if (current.startTime - candidate.endTime <= 30) {
+          targetCue = candidate;
+          targetIndex = prevIdx - 1;
+        } else {
+          return { targetCue: null, targetIndex: -1 };
+        }
+      } else if (prevIdx === 0) {
+        return { targetCue: null, targetIndex: -1 };
+      }
+    }
+    if (!targetCue) {
+      for (let i = timeline.length - 1; i >= 0; i--) {
+        const c = timeline[i];
+        if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 3) {
+          const targetSeekPos = Math.max(0.08, c.startTime - padSec);
+          if (Math.abs(vPos - targetSeekPos) < 0.55 || vPos < targetSeekPos + 0.45 && vPos >= targetSeekPos - 0.25) {
+            if (i > 0) {
+              const prevCandidate = timeline[i - 1];
+              if (c.startTime - prevCandidate.endTime <= 30) {
+                targetCue = prevCandidate;
+                targetIndex = i - 1;
+              }
+              break;
+            } else {
+              return { targetCue: null, targetIndex: -1 };
+            }
+          }
+          targetCue = c;
+          targetIndex = i;
+          break;
+        } else if (c.endTime < vPos) {
+          if (targetCue === null && vPos - c.endTime <= 12) {
+            targetCue = c;
+            targetIndex = i;
+            break;
+          }
+        }
+      }
+    }
+    return { targetCue, targetIndex };
+  }
+  function findNextSubtitleCue(timeline, vPos, lastSeekTargetId, lastSeekWallTime, activeReplayCue) {
+    const nowWall = Date.now();
+    let targetCue = null;
+    const anchorId = lastSeekTargetId && nowWall - lastSeekWallTime < 1800 ? lastSeekTargetId : activeReplayCue?.id || null;
+    if (anchorId) {
+      const idx = timeline.findIndex((c) => c.id === anchorId);
+      if (idx !== -1 && idx + 1 < timeline.length) {
+        const nextCandidate = timeline[idx + 1];
+        if (nextCandidate.startTime - timeline[idx].endTime <= 30) {
+          targetCue = nextCandidate;
+        }
+      }
+    }
+    if (!targetCue) {
+      for (let i = 0; i < timeline.length; i++) {
+        const c = timeline[i];
+        if (c.startTime > vPos + 0.2 && c.startTime - vPos <= 30) {
+          targetCue = c;
+          break;
+        }
+      }
+    }
+    return targetCue;
+  }
+
+  // src/content/overlay.ts
   var VideoOverlay = class {
     video;
     container;
-    toolbarContainer;
-    prevBtn;
-    rerecordBtn;
-    nextBtn;
     stackContainer;
+    toolbar;
     settings;
     fadeTimer = null;
     fadeTargetTime = 0;
@@ -130,59 +515,12 @@
       this.container.style.setProperty("flex-direction", "column", "important");
       this.container.style.setProperty("align-items", "center", "important");
       this.container.style.setProperty("gap", "6px", "important");
-      this.toolbarContainer = document.createElement("div");
-      this.toolbarContainer.className = "whisper-cli-sub-toolbar";
-      this.toolbarContainer.style.setProperty("display", "none", "important");
-      this.toolbarContainer.style.setProperty("justify-content", "center", "important");
-      this.toolbarContainer.style.setProperty("align-items", "center", "important");
-      this.toolbarContainer.style.setProperty("gap", "6px", "important");
-      this.toolbarContainer.style.setProperty("pointer-events", "none", "important");
-      this.prevBtn = document.createElement("button");
-      this.prevBtn.type = "button";
-      this.prevBtn.className = "whisper-cli-sub-rerecord-btn";
-      this.prevBtn.title = "Previous subtitle (Left Arrow)";
-      this.prevBtn.textContent = "\u23EE Prev";
-      this.prevBtn.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      this.prevBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.seekToPreviousSubtitle();
-      });
-      this.rerecordBtn = document.createElement("button");
-      this.rerecordBtn.type = "button";
-      this.rerecordBtn.className = "whisper-cli-sub-rerecord-btn";
-      this.rerecordBtn.title = "Uncement & re-record this subtitle line from its start (Alt+R)";
-      this.rerecordBtn.textContent = "\u{1F504} Re-record Line";
-      this.rerecordBtn.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      this.rerecordBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.rerecordCurrentSubtitle();
-      });
-      this.nextBtn = document.createElement("button");
-      this.nextBtn.type = "button";
-      this.nextBtn.className = "whisper-cli-sub-rerecord-btn";
-      this.nextBtn.title = "Next subtitle (Right Arrow)";
-      this.nextBtn.textContent = "Next \u23ED";
-      this.nextBtn.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      this.nextBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.seekToNextSubtitle();
-      });
-      this.toolbarContainer.appendChild(this.prevBtn);
-      this.toolbarContainer.appendChild(this.rerecordBtn);
-      this.toolbarContainer.appendChild(this.nextBtn);
-      this.container.appendChild(this.toolbarContainer);
+      this.toolbar = createOverlayToolbar(
+        () => this.seekToPreviousSubtitle(),
+        () => this.rerecordCurrentSubtitle(),
+        () => this.seekToNextSubtitle()
+      );
+      this.container.appendChild(this.toolbar.toolbarContainer);
       this.stackContainer = document.createElement("div");
       this.stackContainer.className = "whisper-cli-sub-stack";
       this.stackContainer.style.setProperty("display", "flex", "important");
@@ -197,29 +535,15 @@
       this.setupListeners();
     }
     updateToolbarVisibility() {
-      if (!this.toolbarContainer || !this.rerecordBtn || !this.prevBtn || !this.nextBtn) return;
-      const isRerecording = Boolean(this.rerecordWindow && Date.now() < this.rerecordWindow.expiresAt);
-      if (isRerecording) {
-        this.prevBtn.style.setProperty("display", "none", "important");
-        this.nextBtn.style.setProperty("display", "none", "important");
-        this.rerecordBtn.style.setProperty("display", "inline-flex", "important");
-        this.rerecordBtn.textContent = "\u{1F399}\uFE0F Re-recording line...";
-        this.toolbarContainer.style.setProperty("display", "flex", "important");
-        return;
-      }
-      this.rerecordBtn.textContent = "\u{1F504} Re-record Line";
-      if (!this.video.paused || this.activeCues.length === 0) {
-        this.toolbarContainer.style.setProperty("display", "none", "important");
-        return;
-      }
-      const showPrev = (this.settings.showPrevButton ?? true) && this.hasPreviousSubtitle();
-      const showRerecord = this.settings.showRerecordButton ?? true;
-      const showNext = (this.settings.showNextButton ?? true) && this.hasNextSubtitle();
-      this.prevBtn.style.setProperty("display", showPrev ? "inline-flex" : "none", "important");
-      this.rerecordBtn.style.setProperty("display", showRerecord ? "inline-flex" : "none", "important");
-      this.nextBtn.style.setProperty("display", showNext ? "inline-flex" : "none", "important");
-      const shouldShow = showPrev || showRerecord || showNext;
-      this.toolbarContainer.style.setProperty("display", shouldShow ? "flex" : "none", "important");
+      updateToolbarState(
+        this.toolbar,
+        this.video,
+        this.settings,
+        this.activeCues.length > 0,
+        this.rerecordWindow,
+        () => this.hasPreviousSubtitle(),
+        () => this.hasNextSubtitle()
+      );
     }
     safeSendMessage(message) {
       try {
@@ -275,8 +599,11 @@
     setupListeners() {
       const onFullscreen = () => {
         this.attach();
+        setTimeout(() => this.updatePosition(), 60);
+        setTimeout(() => this.updatePosition(), 250);
       };
       document.addEventListener("fullscreenchange", onFullscreen);
+      document.addEventListener("webkitfullscreenchange", onFullscreen);
       if (typeof ResizeObserver !== "undefined") {
         this.resizeObserver = new ResizeObserver(() => {
           this.updatePosition();
@@ -294,6 +621,7 @@
       const onPlay = () => this.onVideoPlay();
       const onTimeUpdate = () => this.onTimeUpdate();
       this.video.addEventListener("pause", onPause);
+      this.video.addEventListener("ended", onPause);
       this.video.addEventListener("play", onPlay);
       this.video.addEventListener("playing", onPlay);
       this.video.addEventListener("timeupdate", onTimeUpdate);
@@ -303,6 +631,9 @@
         if (this.fadeTimer) {
           clearTimeout(this.fadeTimer);
           this.fadeTimer = null;
+        }
+        if (this.activeCues.length > 0) {
+          this.container.style.setProperty("opacity", "1", "important");
         }
       };
       const onMouseLeave = () => {
@@ -317,97 +648,62 @@
       const stopProp = (e) => {
         e.stopPropagation();
       };
-      this.stackContainer.addEventListener("mousedown", stopProp);
-      this.stackContainer.addEventListener("click", stopProp);
+      const selectionEvents = [
+        "mousedown",
+        "mouseup",
+        "pointerdown",
+        "pointerup",
+        "click",
+        "dblclick",
+        "contextmenu",
+        "selectstart"
+      ];
+      for (const evt of selectionEvents) {
+        this.stackContainer.addEventListener(evt, stopProp);
+      }
       this.container._cleanup = () => {
         document.removeEventListener("fullscreenchange", onFullscreen);
+        document.removeEventListener("webkitfullscreenchange", onFullscreen);
         window.removeEventListener("resize", onWindowChange);
         window.removeEventListener("scroll", onWindowChange);
         this.video.removeEventListener("play", onWindowChange);
         this.video.removeEventListener("loadedmetadata", onWindowChange);
         this.video.removeEventListener("pause", onPause);
+        this.video.removeEventListener("ended", onPause);
         this.video.removeEventListener("play", onPlay);
         this.video.removeEventListener("playing", onPlay);
         this.video.removeEventListener("timeupdate", onTimeUpdate);
         this.container.removeEventListener("mouseenter", onMouseEnter);
         this.container.removeEventListener("mouseleave", onMouseLeave);
-        this.stackContainer.removeEventListener("mousedown", stopProp);
-        this.stackContainer.removeEventListener("click", stopProp);
+        for (const evt of selectionEvents) {
+          this.stackContainer.removeEventListener(evt, stopProp);
+        }
         if (this.resizeObserver) {
           this.resizeObserver.disconnect();
         }
       };
     }
-    applySettings(settings2) {
-      this.settings = settings2;
-      this.updateToolbarVisibility();
-      if (!settings2.enabled) {
-        this.hide();
-      } else {
-        this.renderStack();
-        this.updatePosition();
+    hasSelectedText() {
+      try {
+        if (typeof window === "undefined" || typeof window.getSelection !== "function") {
+          return false;
+        }
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+        return this.container.contains(sel.anchorNode) || this.container.contains(sel.focusNode);
+      } catch {
+        return false;
       }
     }
+    applySettings(settings2) {
+      this.settings = settings2;
+      applyOverlayStyles(this.container, this.stackContainer, settings2);
+      this.renderStack();
+      this.updatePosition();
+    }
     renderStack() {
-      this.stackContainer.innerHTML = "";
-      const total = this.activeCues.length;
+      renderSubtitleStack(this.stackContainer, this.activeCues, this.settings);
       this.updateToolbarVisibility();
-      if (total === 0) return;
-      for (let i = 0; i < total; i++) {
-        const cue = this.activeCues[i];
-        const age = total - 1 - i;
-        let opacity = 1;
-        let scale = 1;
-        if (age === 1) {
-          opacity = 0.68;
-          scale = 0.85;
-        } else if (age === 2) {
-          opacity = 0.42;
-          scale = 0.72;
-        } else if (age >= 3) {
-          opacity = 0.25;
-          scale = 0.6;
-        }
-        const item = document.createElement("div");
-        item.className = "whisper-cli-sub-item";
-        item.dataset.cueId = cue.id;
-        item.textContent = cue.text;
-        const itemFontSize = Math.max(13, Math.round(this.settings.fontSize * scale));
-        item.style.setProperty("font-size", `${itemFontSize}px`, "important");
-        item.style.setProperty("opacity", String(opacity), "important");
-        item.style.setProperty("color", this.settings.textColor, "important");
-        item.style.setProperty("font-family", 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', "important");
-        item.style.setProperty("font-weight", age === 0 ? "600" : "500", "important");
-        item.style.setProperty("line-height", "1.35", "important");
-        item.style.setProperty("text-align", "center", "important");
-        item.style.setProperty("user-select", "text", "important");
-        item.style.setProperty("-webkit-user-select", "text", "important");
-        item.style.setProperty("pointer-events", "auto", "important");
-        item.style.setProperty("cursor", "text", "important");
-        item.style.setProperty("transition", "all 0.25s cubic-bezier(0.16, 1, 0.3, 1)", "important");
-        item.style.setProperty("display", "inline-block", "important");
-        item.style.setProperty("word-break", "break-word", "important");
-        if (this.settings.showBackgroundBox) {
-          item.style.setProperty("background", this.settings.backgroundColor, "important");
-          item.style.setProperty("padding", age === 0 ? "6px 14px" : "4px 10px", "important");
-          item.style.setProperty("border-radius", "6px", "important");
-          item.style.setProperty("box-shadow", "0 2px 8px rgba(0, 0, 0, 0.4)", "important");
-          item.style.setProperty(
-            "text-shadow",
-            `0 1px 2px ${this.settings.outlineColor}, 0 0 1px ${this.settings.outlineColor}`,
-            "important"
-          );
-        } else {
-          item.style.setProperty("background", "transparent", "important");
-          item.style.setProperty("padding", "0", "important");
-          item.style.setProperty(
-            "text-shadow",
-            `-2px -2px 0 ${this.settings.outlineColor}, 2px -2px 0 ${this.settings.outlineColor}, -2px 2px 0 ${this.settings.outlineColor}, 2px 2px 0 ${this.settings.outlineColor}, 0 2px 6px rgba(0,0,0,0.85)`,
-            "important"
-          );
-        }
-        this.stackContainer.appendChild(item);
-      }
       this.updatePosition();
     }
     updatePosition() {
@@ -415,57 +711,15 @@
       if (!this.container.isConnected) {
         this.attach();
       }
-      const rect = this.video.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {
-        this.container.style.display = "none";
-        return;
-      }
-      this.container.style.setProperty("display", "flex", "important");
-      const fsElement = document.fullscreenElement;
-      const isFs = Boolean(fsElement && (fsElement.contains(this.video) || fsElement === this.video));
-      let centerX;
-      let targetY;
-      if (isFs) {
-        const fsRect = fsElement.getBoundingClientRect();
-        centerX = rect.left - fsRect.left + rect.width / 2;
-        if (this.settings.alignment === "top") {
-          targetY = rect.top - fsRect.top + this.settings.topOffset;
-        } else {
-          targetY = rect.top - fsRect.top + rect.height - this.settings.bottomOffset;
-        }
-      } else {
-        const scrollX = window.scrollX || window.pageXOffset;
-        const scrollY = window.scrollY || window.pageYOffset;
-        centerX = rect.left + rect.width / 2 + scrollX;
-        if (this.settings.alignment === "top") {
-          targetY = rect.top + this.settings.topOffset + scrollY;
-        } else {
-          targetY = rect.top + rect.height - this.settings.bottomOffset + scrollY;
-        }
-      }
-      const maxWidth = Math.max(200, Math.min(rect.width * 0.9, window.innerWidth * 0.92));
-      const isTop = this.settings.alignment === "top";
-      const transformVal = isTop ? "translateX(-50%)" : "translate(-50%, -100%)";
-      this.container.style.setProperty("left", `${centerX}px`, "important");
-      this.container.style.setProperty("top", `${targetY}px`, "important");
-      this.container.style.setProperty("transform", transformVal, "important");
-      this.container.style.setProperty("max-width", `${maxWidth}px`, "important");
+      updateOverlayPosition(this.container, this.video, this.settings);
     }
     clearTimelineCache() {
       this.timeline = [];
       this.utteranceAnchors.clear();
       this.activeReplayCue = null;
-      this.lastSeekTargetId = null;
-      this.lastSeekWallTime = 0;
       this.maxWatchedTime = 0;
       this.rerecordWindow = null;
       console.log("[whisper-cli-sub-injector] Subtitle replay cache cleared.");
-    }
-    splitIntoSentenceParts(text) {
-      const trimmed = text.trim();
-      if (!trimmed) return [];
-      const parts = trimmed.split(/(?<=[.!?。！？…]["”'’»)」』】]?)\s+|(?<=[。！？…])(?=[^\s。！？…])/u).map((s) => s.trim()).filter((s) => s.length >= 2);
-      return parts.length > 1 ? parts : [trimmed];
     }
     restoreIfIdle(cue) {
       if (!this.settings.enabled) return;
@@ -482,12 +736,11 @@
       if (this.activeCues.length > 0 && this.container) {
         this.updatePosition();
         this.container.style.setProperty("opacity", "1", "important");
+        this.updateToolbarVisibility();
+        return;
       }
+      this.onTimeUpdate();
     }
-    /**
-     * Uncements the currently active or most recent subtitle line, removes it from history,
-     * opens a re-record window for its timespan, and seeks back to replay & re-transcribe it cleanly.
-     */
     rerecordCurrentSubtitle() {
       if (!this.settings.enabled) return false;
       const vPos = this.video.currentTime;
@@ -549,81 +802,164 @@
       this.performSafeVideoSeek(targetCue.startTime - padSec);
       return true;
     }
+    shouldDropPausedAudio(cue) {
+      if (!this.video.paused) return false;
+      const pausedDurationMs = this.pausedAt > 0 ? Date.now() - this.pausedAt : 999999;
+      const startedWhilePlaying = this.utteranceAnchors.has(cue.id) && pausedDurationMs <= 2500;
+      const finalizationGraceMs = (cue.lagMs ?? 350) + 450;
+      if (this.settings.ignoreSubtitlesWhenPaused ?? true) {
+        if (!startedWhilePlaying && pausedDurationMs > finalizationGraceMs) {
+          this.safeSendMessage({
+            type: "DROP_PAUSED_HISTORY_CUE",
+            cueId: cue.id
+          });
+          return true;
+        }
+      } else if (this.settings.pauseSubtitlesWithVideo && pausedDurationMs > 4e3) {
+        return true;
+      }
+      return false;
+    }
+    findTimelineIndexFromEnd(id) {
+      for (let i = this.timeline.length - 1; i >= 0; i--) {
+        if (this.timeline[i].id === id) {
+          return i;
+        }
+      }
+      return -1;
+    }
+    isCementedDuplicate(cue, estimatedStart, estimatedEnd, inRerecordWindow) {
+      if (!this.settings.enableSubtitleCache || !(this.settings.cementSubtitlesInTimeline ?? true) || inRerecordWindow) {
+        return false;
+      }
+      if (this.findTimelineIndexFromEnd(cue.id) !== -1) return false;
+      const cementedMatch = this.timeline.find((c) => {
+        if (!c.isFinal) return false;
+        if (Math.abs(cue.receivedAt - c.receivedAt) < 3e3) return false;
+        const overlap = Math.min(c.endTime, estimatedEnd) - Math.max(c.startTime, estimatedStart);
+        const span = Math.max(0.2, estimatedEnd - estimatedStart);
+        return overlap > 0.35 || overlap / span > 0.45;
+      });
+      if (cementedMatch) {
+        this.safeSendMessage({
+          type: "DROP_PAUSED_HISTORY_CUE",
+          cueId: cue.id,
+          forceDelete: true
+        });
+        const nowVideo = this.video.currentTime;
+        if (nowVideo >= cementedMatch.startTime - 0.25 && nowVideo <= cementedMatch.endTime + 0.25) {
+          this.displayReplayCue(cementedMatch);
+          this.activeReplayCue = cementedMatch;
+        }
+        return true;
+      }
+      return false;
+    }
+    addOrUpdateTimeline(cue, estimatedStart, estimatedEnd) {
+      let syncedTimelineCue = {
+        id: cue.id,
+        text: cue.text,
+        startTime: estimatedStart,
+        endTime: estimatedEnd,
+        receivedAt: cue.receivedAt,
+        isFinal: cue.isFinal
+      };
+      let replacedCueId;
+      const sameIdIndex = this.findTimelineIndexFromEnd(cue.id);
+      if (sameIdIndex !== -1) {
+        const target = this.timeline[sameIdIndex];
+        const sentenceParts = (this.settings.splitMultiSentenceCues ?? true) && (cue.isFinal ?? true) ? splitIntoSentenceParts(cue.text) : [cue.text.trim()];
+        if (sentenceParts.length > 1) {
+          const totalChars = Math.max(
+            1,
+            sentenceParts.reduce((acc, s) => acc + s.length, 0)
+          );
+          const totalSpan = Math.max(0.4, estimatedEnd - estimatedStart);
+          let cursorStart = estimatedStart;
+          const newItems = [];
+          sentenceParts.forEach((part, idx) => {
+            const weight = part.length / totalChars;
+            const partSpan = idx === sentenceParts.length - 1 ? Math.max(0.2, estimatedEnd - cursorStart) : Math.max(0.25, totalSpan * weight);
+            const partEnd = Math.min(estimatedEnd, cursorStart + partSpan);
+            const subItem = {
+              id: idx === 0 ? cue.id : `${cue.id}-s${idx}`,
+              text: part,
+              startTime: cursorStart,
+              endTime: Math.max(cursorStart + 0.2, partEnd),
+              receivedAt: cue.receivedAt + idx,
+              isFinal: true
+            };
+            newItems.push(subItem);
+            cursorStart = subItem.endTime + 0.01;
+          });
+          this.timeline.splice(sameIdIndex, 1, ...newItems);
+          syncedTimelineCue = newItems[0];
+        } else {
+          target.text = cue.text;
+          target.startTime = estimatedStart;
+          target.endTime = Math.max(estimatedStart + 0.2, estimatedEnd);
+          target.receivedAt = cue.receivedAt;
+          target.isFinal = cue.isFinal;
+          syncedTimelineCue = target;
+        }
+      } else {
+        const prevStartTime = this.timeline.length > 0 ? this.timeline[this.timeline.length - 1].startTime : -1;
+        if (this.timeline.length > 0) {
+          const prev = this.timeline[this.timeline.length - 1];
+          if (prev.startTime < estimatedStart && prev.endTime > estimatedStart && prev.endTime - estimatedStart < 0.4) {
+            prev.endTime = Math.max(prev.startTime + 0.15, estimatedStart - 0.02);
+          }
+        }
+        const sentenceParts = (this.settings.splitMultiSentenceCues ?? true) && (cue.isFinal ?? true) ? splitIntoSentenceParts(cue.text) : [cue.text.trim()];
+        if (sentenceParts.length > 1) {
+          const totalChars = Math.max(
+            1,
+            sentenceParts.reduce((acc, s) => acc + s.length, 0)
+          );
+          const totalSpan = Math.max(0.4, estimatedEnd - estimatedStart);
+          let cursorStart = estimatedStart;
+          sentenceParts.forEach((part, idx) => {
+            const weight = part.length / totalChars;
+            const partSpan = idx === sentenceParts.length - 1 ? Math.max(0.2, estimatedEnd - cursorStart) : Math.max(0.25, totalSpan * weight);
+            const partEnd = Math.min(estimatedEnd, cursorStart + partSpan);
+            const subItem = {
+              id: idx === 0 ? cue.id : `${cue.id}-s${idx}`,
+              text: part,
+              startTime: cursorStart,
+              endTime: Math.max(cursorStart + 0.2, partEnd),
+              receivedAt: cue.receivedAt + idx,
+              isFinal: true
+            };
+            this.timeline.push(subItem);
+            cursorStart = subItem.endTime + 0.01;
+          });
+          syncedTimelineCue = this.timeline[this.timeline.length - 1];
+        } else {
+          this.timeline.push(syncedTimelineCue);
+        }
+        if (this.timeline.length > 2e3) {
+          this.timeline.splice(0, this.timeline.length - 2e3);
+        }
+        if (estimatedStart < prevStartTime) {
+          this.timeline.sort((a, b) => a.startTime - b.startTime);
+        }
+      }
+      return { syncedCue: syncedTimelineCue, replacedCueId };
+    }
     showCue(cue) {
       if (!this.settings.enabled) return;
       const cleanText = cue.text.trim();
       if (!cleanText) return;
-      const cleanTextLower = cleanText.toLowerCase();
-      const pausedDurationMs = this.video.paused ? this.pausedAt > 0 ? Date.now() - this.pausedAt : 999999 : 0;
-      if (this.video.paused) {
-        const startedWhilePlaying = this.utteranceAnchors.has(cue.id) && pausedDurationMs <= 2500;
-        const finalizationGraceMs = (cue.lagMs ?? 350) + 450;
-        if (this.settings.ignoreSubtitlesWhenPaused ?? true) {
-          if (!startedWhilePlaying && pausedDurationMs > finalizationGraceMs) {
-            this.safeSendMessage({
-              type: "DROP_PAUSED_HISTORY_CUE",
-              cueId: cue.id
-            });
-            return;
-          }
-        } else if (this.settings.pauseSubtitlesWithVideo && pausedDurationMs > 4e3) {
-          return;
-        }
-      }
+      if (this.shouldDropPausedAudio(cue)) return;
       const nowVideo = this.video.currentTime;
       this.maxWatchedTime = Math.max(this.maxWatchedTime, nowVideo);
-      const playbackRate = this.video.playbackRate > 0 ? this.video.playbackRate : 1;
-      const pausedDuringLagSec = this.video.paused && this.pausedAt > 0 ? Math.max(0, (Date.now() - this.pausedAt) / 1e3) : 0;
-      const startPadSec = Math.max(0, (this.settings.srtStartPaddingMs ?? 50) / 1e3);
-      const endPadSec = Math.max(0, (this.settings.srtEndPaddingMs ?? 100) / 1e3);
-      let estimatedStart;
-      let estimatedEnd;
-      const hasExactCliTiming = (this.settings.exactByteTiming ?? true) && (cue.durationMs !== void 0 || cue.clipStartMs !== void 0);
-      if (hasExactCliTiming) {
-        const rawLagSec = cue.lagMs !== void 0 && cue.lagMs >= 0 ? cue.lagMs / 1e3 : 0.05;
-        const effectiveLagSec = Math.max(0, rawLagSec - pausedDuringLagSec);
-        const clipDurSec = Math.max(
-          0.12,
-          (cue.durationMs && cue.durationMs > 0 ? cue.durationMs : 250) / 1e3 * playbackRate
-        );
-        const rawEnd = Math.max(0, nowVideo - effectiveLagSec * playbackRate);
-        let rawStart = Math.max(0, rawEnd - clipDurSec);
-        const existingAnchor = this.utteranceAnchors.get(cue.id);
-        if (!existingAnchor) {
-          this.utteranceAnchors.set(cue.id, {
-            id: cue.id,
-            rawVideoStart: rawStart,
-            firstClipStartMs: cue.clipStartMs
-          });
-          if (this.utteranceAnchors.size > 48) {
-            const oldestKey = this.utteranceAnchors.keys().next().value;
-            if (oldestKey) this.utteranceAnchors.delete(oldestKey);
-          }
-        } else {
-          if (cue.isFinal && Math.abs(rawStart - existingAnchor.rawVideoStart) < 4) {
-            existingAnchor.rawVideoStart = rawStart;
-          } else if (cue.clipStartMs !== void 0 && existingAnchor.firstClipStartMs !== void 0) {
-            const deltaSec = (cue.clipStartMs - existingAnchor.firstClipStartMs) / 1e3 * playbackRate;
-            if (Math.abs(deltaSec) < 2) {
-              rawStart = Math.max(0, existingAnchor.rawVideoStart + deltaSec);
-            } else {
-              rawStart = Math.min(existingAnchor.rawVideoStart, rawStart);
-            }
-          } else {
-            rawStart = Math.min(existingAnchor.rawVideoStart, rawStart);
-          }
-        }
-        estimatedStart = Math.max(0, rawStart - startPadSec);
-        estimatedEnd = Math.max(estimatedStart + 0.2, rawEnd + endPadSec);
-      } else {
-        const textSec = Math.max(1.8, cleanText.length / 13);
-        const chunkSec = cue.durationMs && cue.durationMs > 0 ? cue.durationMs / 1e3 : 0;
-        const durSec = Math.max(chunkSec, textSec);
-        const lagSec = cue.lagMs !== void 0 && cue.lagMs >= 0 ? cue.lagMs / 1e3 : 0.75;
-        const effectiveLagSec = Math.max(0, lagSec - pausedDuringLagSec);
-        estimatedEnd = Math.max(0, nowVideo - effectiveLagSec * playbackRate + endPadSec);
-        estimatedStart = Math.max(0, estimatedEnd - durSec * playbackRate - startPadSec);
-      }
+      const { estimatedStart, estimatedEnd } = estimateCueTiming(
+        cue,
+        this.video,
+        this.settings,
+        this.pausedAt,
+        this.utteranceAnchors
+      );
       if (nowVideo < 2 && this.timeline.length > 0 && this.timeline[this.timeline.length - 1].startTime > 30) {
         this.timeline = [];
         this.utteranceAnchors.clear();
@@ -639,35 +975,16 @@
       if (inRerecordWindow && cue.isFinal) {
         this.rerecordWindow = null;
       }
-      if (this.settings.enableSubtitleCache && (this.settings.cementSubtitlesInTimeline ?? true) && !inRerecordWindow) {
-        const sameIdExists = this.timeline.some((c) => c.id === cue.id);
-        if (!sameIdExists) {
-          const cementedMatch = this.timeline.find((c) => {
-            if (!c.isFinal) return false;
-            if (Math.abs(cue.receivedAt - c.receivedAt) < 3e3) return false;
-            const overlap = Math.min(c.endTime, estimatedEnd) - Math.max(c.startTime, estimatedStart);
-            const span = Math.max(0.2, estimatedEnd - estimatedStart);
-            return overlap > 0.35 || overlap / span > 0.45;
-          });
-          if (cementedMatch) {
-            this.safeSendMessage({
-              type: "DROP_PAUSED_HISTORY_CUE",
-              cueId: cue.id,
-              forceDelete: true
-            });
-            if (nowVideo >= cementedMatch.startTime - 0.25 && nowVideo <= cementedMatch.endTime + 0.25) {
-              this.displayReplayCue(cementedMatch);
-              this.activeReplayCue = cementedMatch;
-            }
-            return;
-          }
-        }
+      if (this.isCementedDuplicate(cue, estimatedStart, estimatedEnd, inRerecordWindow)) {
+        return;
       }
       if (nowVideo > 15 && this.timeline.length > 0 && this.timeline[0].endTime < 2.5) {
         this.timeline = this.timeline.filter((c) => c.endTime >= 2.5);
       }
       this.activeReplayCue = null;
       this.lastLiveCueAt = Date.now();
+      this.updateActiveCues(cue, cleanText);
+      const hasValidVideoClock = nowVideo > 0.08 || this.maxWatchedTime > 0.5;
       let syncedTimelineCue = {
         id: cue.id,
         text: cue.text,
@@ -677,99 +994,10 @@
         isFinal: cue.isFinal
       };
       let replacedCueId;
-      const hasValidVideoClock = nowVideo > 0.08 || this.maxWatchedTime > 0.5;
       if (this.settings.enableSubtitleCache && hasValidVideoClock) {
-        const sameIdIndex = this.timeline.findIndex((c) => c.id === cue.id);
-        if (sameIdIndex !== -1) {
-          const target = this.timeline[sameIdIndex];
-          const sentenceParts = (this.settings.splitMultiSentenceCues ?? true) && (cue.isFinal ?? true) ? this.splitIntoSentenceParts(cue.text) : [cue.text.trim()];
-          if (sentenceParts.length > 1) {
-            const totalChars = Math.max(
-              1,
-              sentenceParts.reduce((acc, s) => acc + s.length, 0)
-            );
-            const totalSpan = Math.max(0.4, estimatedEnd - estimatedStart);
-            let cursorStart = estimatedStart;
-            const newItems = [];
-            sentenceParts.forEach((part, idx) => {
-              const weight = part.length / totalChars;
-              const partSpan = idx === sentenceParts.length - 1 ? Math.max(0.2, estimatedEnd - cursorStart) : Math.max(0.25, totalSpan * weight);
-              const partEnd = Math.min(estimatedEnd, cursorStart + partSpan);
-              const subItem = {
-                id: idx === 0 ? cue.id : `${cue.id}-s${idx}`,
-                text: part,
-                startTime: cursorStart,
-                endTime: Math.max(cursorStart + 0.2, partEnd),
-                receivedAt: cue.receivedAt + idx,
-                isFinal: true
-              };
-              newItems.push(subItem);
-              cursorStart = subItem.endTime + 0.01;
-            });
-            this.timeline.splice(sameIdIndex, 1, ...newItems);
-            syncedTimelineCue = newItems[0];
-          } else {
-            target.text = cue.text;
-            target.startTime = estimatedStart;
-            target.endTime = Math.max(estimatedStart + 0.2, estimatedEnd);
-            target.receivedAt = cue.receivedAt;
-            target.isFinal = cue.isFinal;
-            syncedTimelineCue = target;
-          }
-        } else {
-          const healIndex = -1;
-          if (healIndex !== -1) {
-            const existing = this.timeline[healIndex];
-            replacedCueId = existing.id !== cue.id ? existing.id : void 0;
-            if (cleanText.length >= existing.text.trim().length || cue.isFinal) {
-              existing.text = cue.text;
-            }
-            existing.startTime = Math.min(existing.startTime, estimatedStart);
-            existing.endTime = Math.max(existing.endTime, estimatedEnd);
-            existing.id = cue.id;
-            existing.receivedAt = cue.receivedAt;
-            existing.isFinal = cue.isFinal ?? existing.isFinal;
-            syncedTimelineCue = existing;
-          } else {
-            if (this.timeline.length > 0) {
-              const prev = this.timeline[this.timeline.length - 1];
-              if (prev.startTime < estimatedStart && prev.endTime > estimatedStart && prev.endTime - estimatedStart < 0.4) {
-                prev.endTime = Math.max(prev.startTime + 0.15, estimatedStart - 0.02);
-              }
-            }
-            const sentenceParts = (this.settings.splitMultiSentenceCues ?? true) && (cue.isFinal ?? true) ? this.splitIntoSentenceParts(cue.text) : [cue.text.trim()];
-            if (sentenceParts.length > 1) {
-              const totalChars = Math.max(
-                1,
-                sentenceParts.reduce((acc, s) => acc + s.length, 0)
-              );
-              const totalSpan = Math.max(0.4, estimatedEnd - estimatedStart);
-              let cursorStart = estimatedStart;
-              sentenceParts.forEach((part, idx) => {
-                const weight = part.length / totalChars;
-                const partSpan = idx === sentenceParts.length - 1 ? Math.max(0.2, estimatedEnd - cursorStart) : Math.max(0.25, totalSpan * weight);
-                const partEnd = Math.min(estimatedEnd, cursorStart + partSpan);
-                const subItem = {
-                  id: idx === 0 ? cue.id : `${cue.id}-s${idx}`,
-                  text: part,
-                  startTime: cursorStart,
-                  endTime: Math.max(cursorStart + 0.2, partEnd),
-                  receivedAt: cue.receivedAt + idx,
-                  isFinal: true
-                };
-                this.timeline.push(subItem);
-                cursorStart = subItem.endTime + 0.01;
-              });
-              syncedTimelineCue = this.timeline[this.timeline.length - 1];
-            } else {
-              this.timeline.push(syncedTimelineCue);
-            }
-            if (this.timeline.length > 2e3) {
-              this.timeline.splice(0, this.timeline.length - 2e3);
-            }
-            this.timeline.sort((a, b) => a.startTime - b.startTime);
-          }
-        }
+        const res = this.addOrUpdateTimeline(cue, estimatedStart, estimatedEnd);
+        syncedTimelineCue = res.syncedCue;
+        replacedCueId = res.replacedCueId;
       }
       if (nowVideo > 0.08 || this.maxWatchedTime > 0.5) {
         this.safeSendMessage({
@@ -783,6 +1011,8 @@
           isFinal: cue.isFinal
         });
       }
+    }
+    updateActiveCues(cue, cleanText) {
       const lastCue = this.activeCues[this.activeCues.length - 1];
       const isContinuation = lastCue && (lastCue.id === cue.id || !lastCue.isFinal && (cleanText.startsWith(lastCue.text.trim()) || lastCue.text.trim().startsWith(cleanText)));
       if (isContinuation && lastCue) {
@@ -791,8 +1021,10 @@
         lastCue.id = cue.id;
         lastCue.durationMs = cue.durationMs;
         lastCue.isFinal = cue.isFinal;
-        this.renderStack();
-        this.container.style.setProperty("opacity", "1", "important");
+        renderSubtitleStack(this.stackContainer, this.activeCues, this.settings);
+        if (this.container.style.opacity !== "1") {
+          this.container.style.setProperty("opacity", "1", "important");
+        }
         return;
       }
       if (!this.settings.stackMode || this.settings.maxLines <= 1) {
@@ -818,28 +1050,8 @@
         }
       }
     }
-    getSafeSeekTime(rawSeekTime) {
-      let safeTime = Math.max(0.08, rawSeekTime);
-      try {
-        const buffered = this.video.buffered;
-        if (buffered && buffered.length > 0) {
-          for (let i = 0; i < buffered.length; i++) {
-            const bStart = buffered.start(i);
-            const bEnd = buffered.end(i);
-            if (safeTime >= bStart && safeTime <= bEnd) {
-              return safeTime;
-            }
-            if (safeTime < bStart && bStart - safeTime < 0.45) {
-              return bStart + 0.02;
-            }
-          }
-        }
-      } catch {
-      }
-      return safeTime;
-    }
     performSafeVideoSeek(rawSeekTime) {
-      const safeSeekTime = this.getSafeSeekTime(rawSeekTime);
+      const safeSeekTime = getSafeSeekTime(this.video, rawSeekTime);
       this.isReplaySeeking = true;
       if (this.replaySeekResetTimer) {
         clearTimeout(this.replaySeekResetTimer);
@@ -913,58 +1125,18 @@
         }
         return false;
       }
-      let targetCue = null;
-      let targetIndex = -1;
-      const nowWall = Date.now();
-      if (this.lastSeekTargetId && nowWall - this.lastSeekWallTime < 1400) {
-        const prevIdx = this.timeline.findIndex((c) => c.id === this.lastSeekTargetId);
-        if (prevIdx > 0) {
-          const candidate = this.timeline[prevIdx - 1];
-          const current = this.timeline[prevIdx];
-          if (current.startTime - candidate.endTime <= 30) {
-            targetCue = candidate;
-            targetIndex = prevIdx - 1;
-          } else {
-            return false;
-          }
-        } else if (prevIdx === 0) {
-          return false;
-        }
-      }
-      if (!targetCue) {
-        for (let i = this.timeline.length - 1; i >= 0; i--) {
-          const c = this.timeline[i];
-          if (vPos >= c.startTime - padSec - 0.25 && vPos <= c.endTime + padSec + 3) {
-            const targetSeekPos = Math.max(0.08, c.startTime - padSec);
-            if (Math.abs(vPos - targetSeekPos) < 0.55 || vPos < targetSeekPos + 0.45 && vPos >= targetSeekPos - 0.25) {
-              if (i > 0) {
-                const prevCandidate = this.timeline[i - 1];
-                if (c.startTime - prevCandidate.endTime <= 30) {
-                  targetCue = prevCandidate;
-                  targetIndex = i - 1;
-                }
-                break;
-              } else {
-                return false;
-              }
-            }
-            targetCue = c;
-            targetIndex = i;
-            break;
-          } else if (c.endTime < vPos) {
-            if (targetCue === null && vPos - c.endTime <= 12) {
-              targetCue = c;
-              targetIndex = i;
-              break;
-            }
-          }
-        }
-      }
+      const { targetCue, targetIndex } = findPreviousSubtitleCue(
+        this.timeline,
+        vPos,
+        padSec,
+        this.lastSeekTargetId,
+        this.lastSeekWallTime
+      );
       if (!targetCue || targetIndex === -1) {
         return false;
       }
       this.lastSeekTargetId = targetCue.id;
-      this.lastSeekWallTime = nowWall;
+      this.lastSeekWallTime = Date.now();
       this.activeReplayCue = targetCue;
       this.displayReplayCue(targetCue);
       this.performSafeVideoSeek(targetCue.startTime - padSec);
@@ -977,32 +1149,18 @@
       if (this.timeline.length === 0) return false;
       const vPos = this.video.currentTime;
       const padSec = (this.settings.subNavigationPaddingMs || 150) / 1e3;
-      const nowWall = Date.now();
-      let targetCue = null;
-      const anchorId = this.lastSeekTargetId && nowWall - this.lastSeekWallTime < 1800 ? this.lastSeekTargetId : this.activeReplayCue?.id || null;
-      if (anchorId) {
-        const idx = this.timeline.findIndex((c) => c.id === anchorId);
-        if (idx !== -1 && idx + 1 < this.timeline.length) {
-          const nextCandidate = this.timeline[idx + 1];
-          if (nextCandidate.startTime - this.timeline[idx].endTime <= 30) {
-            targetCue = nextCandidate;
-          }
-        }
-      }
-      if (!targetCue) {
-        for (let i = 0; i < this.timeline.length; i++) {
-          const c = this.timeline[i];
-          if (c.startTime > vPos + 0.2 && c.startTime - vPos <= 30) {
-            targetCue = c;
-            break;
-          }
-        }
-      }
+      const targetCue = findNextSubtitleCue(
+        this.timeline,
+        vPos,
+        this.lastSeekTargetId,
+        this.lastSeekWallTime,
+        this.activeReplayCue
+      );
       if (!targetCue) {
         return false;
       }
       this.lastSeekTargetId = targetCue.id;
-      this.lastSeekWallTime = nowWall;
+      this.lastSeekWallTime = Date.now();
       this.activeReplayCue = targetCue;
       this.displayReplayCue(targetCue);
       this.performSafeVideoSeek(targetCue.startTime - padSec);
@@ -1038,7 +1196,7 @@
         this.updateToolbarVisibility();
         return;
       }
-      if (!this.isHovered && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
+      if (!this.isHovered && !this.hasSelectedText() && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
         let matchedCue = null;
         for (let i = this.timeline.length - 1; i >= 0; i--) {
           const cue = this.timeline[i];
@@ -1077,7 +1235,7 @@
       this.fadeTargetTime = Date.now() + duration;
       this.fadeRemainingMs = duration;
       this.fadeTimer = setTimeout(() => {
-        if (!this.isHovered && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
+        if (!this.isHovered && !this.hasSelectedText() && (!this.video.paused || !this.settings.pauseSubtitlesWithVideo)) {
           this.hide();
         }
       }, duration);
@@ -1143,111 +1301,10 @@
     }
   }
 
-  // src/content/content.ts
-  var settings = { ...DEFAULT_SETTINGS };
-  var bindings = /* @__PURE__ */ new Map();
-  var activeVideo = null;
-  var selectedVideoId = null;
-  var keepAlivePort = null;
-  var scanIntervalId = null;
-  var domObserver = null;
-  var contextInvalidated = false;
-  var keydownHandler = null;
-  var visibilityHandler = null;
-  var focusHandler = null;
-  var takeoverHandler = null;
+  // src/content/video-finder.ts
   var highlightedVideo = null;
   var originalOutline = "";
   var originalBoxShadow = "";
-  function isExtensionContextValid() {
-    if (contextInvalidated) return false;
-    try {
-      return Boolean(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
-    } catch {
-      return false;
-    }
-  }
-  function cleanupInvalidatedContext() {
-    if (contextInvalidated) return;
-    contextInvalidated = true;
-    if (scanIntervalId) {
-      clearInterval(scanIntervalId);
-      scanIntervalId = null;
-    }
-    if (domObserver) {
-      domObserver.disconnect();
-      domObserver = null;
-    }
-    if (keydownHandler) {
-      window.removeEventListener("keydown", keydownHandler, true);
-      keydownHandler = null;
-    }
-    if (visibilityHandler) {
-      document.removeEventListener("visibilitychange", visibilityHandler);
-      visibilityHandler = null;
-    }
-    if (focusHandler) {
-      window.removeEventListener("focus", focusHandler);
-      focusHandler = null;
-    }
-    if (takeoverHandler) {
-      window.removeEventListener("whisper-cli-sub-instance-takeover", takeoverHandler);
-      takeoverHandler = null;
-    }
-    keepAlivePort = null;
-    clearHighlight();
-    for (const binding of bindings.values()) {
-      try {
-        binding.overlay.destroy();
-      } catch {
-      }
-    }
-    bindings.clear();
-    activeVideo = null;
-  }
-  function initSettings() {
-    if (!isExtensionContextValid()) {
-      cleanupInvalidatedContext();
-      return;
-    }
-    try {
-      chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
-        if (!isExtensionContextValid()) {
-          cleanupInvalidatedContext();
-          return;
-        }
-        settings = { ...DEFAULT_SETTINGS, ...items };
-        for (const binding of bindings.values()) {
-          binding.overlay.applySettings(settings);
-        }
-      });
-    } catch {
-      cleanupInvalidatedContext();
-    }
-  }
-  function ensureKeepAlive() {
-    if (keepAlivePort) return;
-    if (!isExtensionContextValid()) {
-      cleanupInvalidatedContext();
-      return;
-    }
-    try {
-      keepAlivePort = chrome.runtime.connect({ name: "whisper-keepalive" });
-      keepAlivePort.onDisconnect.addListener(() => {
-        keepAlivePort = null;
-        if (isExtensionContextValid()) {
-          setTimeout(ensureKeepAlive, 1500);
-        } else {
-          cleanupInvalidatedContext();
-        }
-      });
-    } catch {
-      keepAlivePort = null;
-      if (!isExtensionContextValid()) {
-        cleanupInvalidatedContext();
-      }
-    }
-  }
   function highlightVideo(video) {
     clearHighlight();
     highlightedVideo = video;
@@ -1281,20 +1338,20 @@
     if (pageTitle) return pageTitle.slice(0, 36);
     return "HTML5 Video Player";
   }
-  function getTargetVideo() {
-    if (!settings.autoEmbed && selectedVideoId) {
-      for (const binding of bindings.values()) {
-        if (binding.id === selectedVideoId && binding.video.isConnected && isEligibleVideo(binding.video)) {
-          return binding.video;
+  function getTargetVideo(bindings2, settings2, selectedVideoId2, activeVideo2) {
+    if (!settings2.autoEmbed && selectedVideoId2) {
+      for (const binding of bindings2.values()) {
+        if (binding.id === selectedVideoId2 && binding.video.isConnected && isEligibleVideo(binding.video)) {
+          return { target: binding.video, newActive: activeVideo2 };
         }
       }
     }
-    if (activeVideo && activeVideo.isConnected && !activeVideo.paused && isEligibleVideo(activeVideo)) {
-      return activeVideo;
+    if (activeVideo2 && activeVideo2.isConnected && !activeVideo2.paused && isEligibleVideo(activeVideo2)) {
+      return { target: activeVideo2, newActive: activeVideo2 };
     }
     let bestCandidate = null;
     let maxPlayedTime = 0;
-    for (const binding of bindings.values()) {
+    for (const binding of bindings2.values()) {
       if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
       if (!binding.video.paused) {
         if (binding.lastPlayed >= maxPlayedTime) {
@@ -1304,15 +1361,14 @@
       }
     }
     if (bestCandidate) {
-      activeVideo = bestCandidate.video;
-      return activeVideo;
+      return { target: bestCandidate.video, newActive: bestCandidate.video };
     }
-    if (activeVideo && activeVideo.isConnected && isEligibleVideo(activeVideo)) {
-      return activeVideo;
+    if (activeVideo2 && activeVideo2.isConnected && isEligibleVideo(activeVideo2)) {
+      return { target: activeVideo2, newActive: activeVideo2 };
     }
     let largestVideo = null;
     let maxArea = 0;
-    for (const binding of bindings.values()) {
+    for (const binding of bindings2.values()) {
       if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
       const rect = binding.video.getBoundingClientRect();
       const area = rect.width * rect.height;
@@ -1322,16 +1378,13 @@
       }
     }
     if (largestVideo) {
-      activeVideo = largestVideo;
-      return activeVideo;
+      return { target: largestVideo, newActive: largestVideo };
     }
-    return null;
+    return { target: null, newActive: activeVideo2 };
   }
-  function getDetectedVideosList() {
-    scanVideos();
-    const target = getTargetVideo();
+  function getDetectedVideosList(bindings2, target) {
     const list = [];
-    for (const binding of bindings.values()) {
+    for (const binding of bindings2.values()) {
       if (!binding.video.isConnected || !isEligibleVideo(binding.video)) continue;
       const v = binding.video;
       const rect = v.getBoundingClientRect();
@@ -1349,6 +1402,181 @@
       });
     }
     return list;
+  }
+
+  // src/content/key-navigation.ts
+  function isEditableElement(el) {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+  }
+  function registerKeyNavigation(getSettings, getTargetBinding, isContextValid, onInvalidContext) {
+    const handler = (e) => {
+      if (!isContextValid()) {
+        onInvalidContext();
+        return;
+      }
+      if (isEditableElement(e.target)) return;
+      const settings2 = getSettings();
+      if (!settings2.enabled) return;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.code === "KeyC" || e.key.toLowerCase() === "c")) {
+        const binding2 = getTargetBinding();
+        if (binding2 && binding2.overlay.hasSelectedText()) {
+          const selectedText = window.getSelection()?.toString();
+          if (selectedText) {
+            navigator.clipboard?.writeText(selectedText).catch(() => {
+            });
+          }
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          return;
+        }
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyR" || e.key.toLowerCase() === "r")) {
+        const binding2 = getTargetBinding();
+        if (!binding2) return;
+        const handled2 = binding2.overlay.rerecordCurrentSubtitle();
+        if (handled2) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (!settings2.subNavigationEnabled) return;
+      const binding = getTargetBinding();
+      if (!binding) return;
+      const handled = e.key === "ArrowLeft" ? binding.overlay.seekToPreviousSubtitle() : binding.overlay.seekToNextSubtitle();
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      window.removeEventListener("keydown", handler, true);
+    };
+  }
+
+  // src/content/content.ts
+  var settings = { ...DEFAULT_SETTINGS };
+  var bindings = /* @__PURE__ */ new Map();
+  var activeVideo = null;
+  var selectedVideoId = null;
+  var keepAlivePort = null;
+  var scanIntervalId = null;
+  var domObserver = null;
+  var contextInvalidated = false;
+  var cleanupKeyNav = null;
+  var visibilityHandler = null;
+  var focusHandler = null;
+  var takeoverHandler = null;
+  function isExtensionContextValid() {
+    if (contextInvalidated) return false;
+    try {
+      return Boolean(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
+    } catch {
+      contextInvalidated = true;
+      return false;
+    }
+  }
+  function cleanupInvalidatedContext() {
+    if (contextInvalidated) return;
+    contextInvalidated = true;
+    if (scanIntervalId) {
+      clearInterval(scanIntervalId);
+      scanIntervalId = null;
+    }
+    if (domObserver) {
+      domObserver.disconnect();
+      domObserver = null;
+    }
+    if (cleanupKeyNav) {
+      cleanupKeyNav();
+      cleanupKeyNav = null;
+    }
+    if (visibilityHandler) {
+      document.removeEventListener("visibilitychange", visibilityHandler);
+      visibilityHandler = null;
+    }
+    if (focusHandler) {
+      window.removeEventListener("focus", focusHandler);
+      focusHandler = null;
+    }
+    if (takeoverHandler) {
+      window.removeEventListener("whisper-cli-sub-instance-takeover", takeoverHandler);
+      takeoverHandler = null;
+    }
+    if (keepAlivePort) {
+      try {
+        keepAlivePort.disconnect();
+      } catch {
+      }
+      keepAlivePort = null;
+    }
+    clearHighlight();
+    for (const binding of bindings.values()) {
+      binding.overlay.destroy();
+    }
+    bindings.clear();
+    activeVideo = null;
+    selectedVideoId = null;
+  }
+  function initSettings() {
+    if (!isExtensionContextValid()) {
+      cleanupInvalidatedContext();
+      return;
+    }
+    try {
+      chrome.storage.sync.get(DEFAULT_SETTINGS, (items) => {
+        if (!isExtensionContextValid()) {
+          cleanupInvalidatedContext();
+          return;
+        }
+        if (items) {
+          const maybeWrapped = items.settings;
+          settings = {
+            ...DEFAULT_SETTINGS,
+            ...maybeWrapped && typeof maybeWrapped === "object" ? maybeWrapped : items
+          };
+          for (const binding of bindings.values()) {
+            binding.overlay.applySettings(settings);
+          }
+        }
+      });
+    } catch {
+      cleanupInvalidatedContext();
+    }
+  }
+  function ensureKeepAlive() {
+    if (!isExtensionContextValid() || keepAlivePort) return;
+    try {
+      keepAlivePort = chrome.runtime.connect({ name: "content-keepalive" });
+      keepAlivePort.onMessage.addListener((message) => {
+        handleIncomingMessage(message);
+      });
+      keepAlivePort.onDisconnect.addListener(() => {
+        keepAlivePort = null;
+        if (isExtensionContextValid()) {
+          setTimeout(ensureKeepAlive, 1e3);
+        } else {
+          cleanupInvalidatedContext();
+        }
+      });
+    } catch {
+      cleanupInvalidatedContext();
+    }
+  }
+  function resolveCurrentTarget() {
+    const result = getTargetVideo(bindings, settings, selectedVideoId, activeVideo);
+    activeVideo = result.newActive;
+    return result.target;
+  }
+  function resolveCurrentTargetBinding() {
+    const target = resolveCurrentTarget();
+    return target ? bindings.get(target) || null : null;
   }
   function scanVideos() {
     if (!isExtensionContextValid()) {
@@ -1403,7 +1631,7 @@
     }
     ensureKeepAlive();
     scanVideos();
-    const target = getTargetVideo();
+    const target = resolveCurrentTarget();
     if (target) {
       const binding = bindings.get(target);
       if (binding) {
@@ -1434,132 +1662,94 @@
       cleanupInvalidatedContext();
     }
   }
+  function handleIncomingMessage(message, sendResponse) {
+    if (!isExtensionContextValid()) {
+      cleanupInvalidatedContext();
+      return false;
+    }
+    if (message.type === "NEW_SUBTITLE") {
+      const target = resolveCurrentTarget();
+      if (target) {
+        const binding = bindings.get(target);
+        if (binding) {
+          binding.overlay.showCue(message.cue);
+        }
+      }
+    } else if (message.type === "SETTINGS_CHANGED") {
+      settings = message.settings;
+      for (const binding of bindings.values()) {
+        binding.overlay.applySettings(settings);
+      }
+    } else if (message.type === "CLEAR_SUBTITLES") {
+      for (const binding of bindings.values()) {
+        binding.overlay.hide();
+      }
+    } else if (message.type === "CLEAR_TIMELINE_CACHE") {
+      for (const binding of bindings.values()) {
+        binding.overlay.clearTimelineCache();
+      }
+    } else if (message.type === "GET_DETECTED_VIDEOS") {
+      scanVideos();
+      const target = resolveCurrentTarget();
+      sendResponse?.({
+        videos: getDetectedVideosList(bindings, target),
+        autoEmbed: settings.autoEmbed ?? true,
+        selectedVideoId
+      });
+      return true;
+    } else if (message.type === "SELECT_VIDEO") {
+      selectedVideoId = message.videoId;
+      settings.autoEmbed = false;
+      for (const binding of bindings.values()) {
+        if (binding.id === message.videoId) {
+          activeVideo = binding.video;
+          binding.overlay.updatePosition();
+        } else {
+          binding.overlay.hide();
+        }
+      }
+      sendResponse?.({ success: true, activeVideoId: selectedVideoId });
+      return true;
+    } else if (message.type === "SET_AUTO_EMBED") {
+      settings.autoEmbed = message.autoEmbed;
+      if (message.autoEmbed) {
+        selectedVideoId = null;
+        activeVideo = resolveCurrentTarget();
+      }
+      sendResponse?.({ success: true });
+      return true;
+    } else if (message.type === "HIGHLIGHT_VIDEO") {
+      for (const binding of bindings.values()) {
+        if (binding.id === message.videoId) {
+          highlightVideo(binding.video);
+          break;
+        }
+      }
+      sendResponse?.({ success: true });
+      return true;
+    } else if (message.type === "UNHIGHLIGHT_VIDEO") {
+      clearHighlight();
+      sendResponse?.({ success: true });
+      return true;
+    } else if (message.type === "TAB_ACTIVATED") {
+      if (message.settings) {
+        settings = message.settings;
+        for (const binding of bindings.values()) {
+          binding.overlay.applySettings(settings);
+        }
+      }
+      onTabActivated(message.lastCue);
+    }
+    return false;
+  }
   if (isExtensionContextValid()) {
     try {
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (!isExtensionContextValid()) {
-          cleanupInvalidatedContext();
-          return false;
-        }
-        if (message.type === "NEW_SUBTITLE") {
-          const target = getTargetVideo();
-          if (target) {
-            const binding = bindings.get(target);
-            if (binding) {
-              binding.overlay.showCue(message.cue);
-            }
-          }
-        } else if (message.type === "SETTINGS_CHANGED") {
-          settings = message.settings;
-          for (const binding of bindings.values()) {
-            binding.overlay.applySettings(settings);
-          }
-        } else if (message.type === "CLEAR_SUBTITLES") {
-          for (const binding of bindings.values()) {
-            binding.overlay.hide();
-          }
-        } else if (message.type === "CLEAR_TIMELINE_CACHE") {
-          for (const binding of bindings.values()) {
-            binding.overlay.clearTimelineCache();
-          }
-        } else if (message.type === "GET_DETECTED_VIDEOS") {
-          sendResponse({
-            videos: getDetectedVideosList(),
-            autoEmbed: settings.autoEmbed ?? true,
-            selectedVideoId
-          });
-          return true;
-        } else if (message.type === "SELECT_VIDEO") {
-          selectedVideoId = message.videoId;
-          settings.autoEmbed = false;
-          for (const binding of bindings.values()) {
-            if (binding.id === message.videoId) {
-              activeVideo = binding.video;
-              binding.overlay.updatePosition();
-            } else {
-              binding.overlay.hide();
-            }
-          }
-          sendResponse({ success: true, activeVideoId: selectedVideoId });
-          return true;
-        } else if (message.type === "SET_AUTO_EMBED") {
-          settings.autoEmbed = message.autoEmbed;
-          if (message.autoEmbed) {
-            selectedVideoId = null;
-            activeVideo = getTargetVideo();
-          }
-          sendResponse({ success: true });
-          return true;
-        } else if (message.type === "HIGHLIGHT_VIDEO") {
-          for (const binding of bindings.values()) {
-            if (binding.id === message.videoId) {
-              highlightVideo(binding.video);
-              break;
-            }
-          }
-          sendResponse({ success: true });
-          return true;
-        } else if (message.type === "UNHIGHLIGHT_VIDEO") {
-          clearHighlight();
-          sendResponse({ success: true });
-          return true;
-        } else if (message.type === "TAB_ACTIVATED") {
-          if (message.settings) {
-            settings = message.settings;
-            for (const binding of bindings.values()) {
-              binding.overlay.applySettings(settings);
-            }
-          }
-          onTabActivated(message.lastCue);
-        }
+        return handleIncomingMessage(message, sendResponse);
       });
     } catch {
       cleanupInvalidatedContext();
     }
-  }
-  function isEditableElement(el) {
-    if (!el || !(el instanceof HTMLElement)) return false;
-    return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
-  }
-  function setupKeyNavigation() {
-    if (keydownHandler) {
-      window.removeEventListener("keydown", keydownHandler, true);
-    }
-    keydownHandler = (e) => {
-      if (!isExtensionContextValid()) {
-        cleanupInvalidatedContext();
-        return;
-      }
-      if (isEditableElement(e.target)) return;
-      if (!settings.enabled) return;
-      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyR" || e.key.toLowerCase() === "r")) {
-        const target2 = getTargetVideo();
-        if (!target2) return;
-        const binding2 = bindings.get(target2);
-        if (!binding2) return;
-        const handled2 = binding2.overlay.rerecordCurrentSubtitle();
-        if (handled2) {
-          e.preventDefault();
-          e.stopPropagation();
-          e.stopImmediatePropagation();
-        }
-        return;
-      }
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      if (!settings.subNavigationEnabled) return;
-      const target = getTargetVideo();
-      if (!target) return;
-      const binding = bindings.get(target);
-      if (!binding) return;
-      const handled = e.key === "ArrowLeft" ? binding.overlay.seekToPreviousSubtitle() : binding.overlay.seekToNextSubtitle();
-      if (handled) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-      }
-    };
-    window.addEventListener("keydown", keydownHandler, true);
   }
   function start() {
     if (!isExtensionContextValid()) {
@@ -1577,7 +1767,12 @@
     initSettings();
     ensureKeepAlive();
     scanVideos();
-    setupKeyNavigation();
+    cleanupKeyNav = registerKeyNavigation(
+      () => settings,
+      resolveCurrentTargetBinding,
+      isExtensionContextValid,
+      cleanupInvalidatedContext
+    );
     scanIntervalId = setInterval(scanVideos, 1e3);
     const observeRoot = document.body || document.documentElement;
     if (observeRoot) {
