@@ -1,7 +1,8 @@
-import { DetectedVideoInfo, ExtensionSettings, SubtitleCue } from '../common/types';
+import { DetectedVideoInfo, ExtensionSettings, isUrlAllowed, SubtitleCue } from '../common/types';
 import { renderVideoList } from './video-list';
 
 document.addEventListener('DOMContentLoaded', () => {
+  let currentSettings: ExtensionSettings | null = null;
   const enabledToggle = document.getElementById('enabled-toggle') as HTMLInputElement;
   const statusDot = document.getElementById('status-dot') as HTMLSpanElement;
   const statusText = document.getElementById('status-text') as HTMLSpanElement;
@@ -107,6 +108,36 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      if (
+        activeTab.url &&
+        currentSettings &&
+        !isUrlAllowed(activeTab.url, currentSettings.urlFilterMode, currentSettings.urlFilterList)
+      ) {
+        if (videoListContainer) {
+          videoListContainer.innerHTML = `
+            <div class="video-empty-state">
+              <span class="empty-icon">🌐</span>
+              <span class="empty-text">Disabled on this website by Webpage Filter settings.</span>
+              <button id="add-to-whitelist-btn" class="btn btn-history" style="margin-top: 8px; font-size: 11px; padding: 4px 10px;">
+                + Allow This Site
+              </button>
+            </div>
+          `;
+          const allowBtn = document.getElementById('add-to-whitelist-btn');
+          allowBtn?.addEventListener('click', () => {
+            try {
+              const host = new URL(activeTab.url!).hostname;
+              const currentList = currentSettings?.urlFilterList || [];
+              if (!currentList.includes(host)) {
+                saveSetting({ urlFilterList: [...currentList, host] });
+              }
+              setTimeout(() => fetchDetectedVideos(), 150);
+            } catch {}
+          });
+        }
+        return;
+      }
+
       chrome.tabs.sendMessage(activeTab.id, { type: 'GET_DETECTED_VIDEOS' }, (res) => {
         if (chrome.runtime.lastError || !res) {
           if (videoListContainer) {
@@ -136,6 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function populatePopupSettings(settings: ExtensionSettings) {
+    currentSettings = settings;
     enabledToggle.checked = settings.enabled;
     autoEmbedToggle.checked = settings.autoEmbed ?? true;
 

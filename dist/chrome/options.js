@@ -35,7 +35,9 @@
     showNextButton: true,
     srtStartPaddingMs: 50,
     srtEndPaddingMs: 100,
-    autoEmbed: true
+    autoEmbed: true,
+    urlFilterMode: "all",
+    urlFilterList: ["crunchyroll.com", "youtube.com", "netflix.com"]
   };
 
   // src/options/options.ts
@@ -84,6 +86,8 @@
     const retentionSelect = document.getElementById("retention-duration");
     const maxEntriesSelect = document.getElementById("max-entries");
     const resetDefaultsBtn = document.getElementById("reset-defaults-btn");
+    const urlFilterModeSelect = document.getElementById("url-filter-mode");
+    const urlFilterListTextarea = document.getElementById("url-filter-list");
     let toastTimeout = null;
     function showSavedToast(label = "\u2713 Saved") {
       saveToast.textContent = label;
@@ -148,6 +152,8 @@
       fadeTimeoutInput.value = String(fadeSecs);
       fadeTimeoutVal.textContent = `${fadeSecs}s`;
       serverUrlInput.value = s.serverUrl;
+      urlFilterModeSelect.value = s.urlFilterMode || "all";
+      urlFilterListTextarea.value = (s.urlFilterList || ["crunchyroll.com", "youtube.com", "netflix.com"]).join("\n");
     }
     function bindTimingSection() {
       exactByteTimingCheckbox.addEventListener("change", () => {
@@ -320,10 +326,20 @@
         updateStatus(status.connected);
       }
     });
+    function bindWebpageFilterSection() {
+      urlFilterModeSelect.addEventListener("change", () => {
+        saveSetting({ urlFilterMode: urlFilterModeSelect.value });
+      });
+      urlFilterListTextarea.addEventListener("change", () => {
+        const list = urlFilterListTextarea.value.split("\n").map((s) => s.trim()).filter(Boolean);
+        saveSetting({ urlFilterList: list });
+      });
+    }
     bindTimingSection();
     bindPlaybackSection();
     bindSmartReplaySection();
     bindAppearanceSection();
+    bindWebpageFilterSection();
     bindServerHistorySection();
   });
 })();

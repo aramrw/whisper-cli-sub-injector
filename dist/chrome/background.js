@@ -53,7 +53,9 @@
     showNextButton: true,
     srtStartPaddingMs: 50,
     srtEndPaddingMs: 100,
-    autoEmbed: true
+    autoEmbed: true,
+    urlFilterMode: "all",
+    urlFilterList: ["crunchyroll.com", "youtube.com", "netflix.com"]
   };
 
   // src/background/history-manager.ts

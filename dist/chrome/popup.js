@@ -1,5 +1,45 @@
 "use strict";
 (() => {
+  // src/common/types.ts
+  function isUrlAllowed(url, mode = "all", filterList = []) {
+    if (mode === "all") return true;
+    if (!url) return false;
+    let hostname = "";
+    try {
+      const parsed = new URL(url);
+      hostname = parsed.hostname.toLowerCase();
+    } catch {
+      hostname = url.toLowerCase();
+    }
+    const normalizedUrl = url.toLowerCase();
+    const matchesAny = filterList.some((rawPattern) => {
+      const pattern = rawPattern.trim().toLowerCase();
+      if (!pattern) return false;
+      if (hostname === pattern || hostname.endsWith("." + pattern)) {
+        return true;
+      }
+      if (normalizedUrl.includes(pattern)) {
+        return true;
+      }
+      if (pattern.includes("*")) {
+        const regexStr = "^" + pattern.split("*").map((s) => s.replace(/[-[\]{}()+?.,\\^$|#\s]/g, "\\$&")).join(".*") + "$";
+        try {
+          const regex = new RegExp(regexStr, "i");
+          return regex.test(hostname) || regex.test(normalizedUrl);
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
+    if (mode === "whitelist") {
+      return matchesAny;
+    } else if (mode === "blacklist") {
+      return !matchesAny;
+    }
+    return true;
+  }
+
   // src/popup/video-list.ts
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -66,6 +106,7 @@
 
   // src/popup/popup.ts
   document.addEventListener("DOMContentLoaded", () => {
+    let currentSettings = null;
     const enabledToggle = document.getElementById("enabled-toggle");
     const statusDot = document.getElementById("status-dot");
     const statusText = document.getElementById("status-text");
@@ -158,6 +199,32 @@
           }
           return;
         }
+        if (activeTab.url && currentSettings && !isUrlAllowed(activeTab.url, currentSettings.urlFilterMode, currentSettings.urlFilterList)) {
+          if (videoListContainer) {
+            videoListContainer.innerHTML = `
+            <div class="video-empty-state">
+              <span class="empty-icon">\u{1F310}</span>
+              <span class="empty-text">Disabled on this website by Webpage Filter settings.</span>
+              <button id="add-to-whitelist-btn" class="btn btn-history" style="margin-top: 8px; font-size: 11px; padding: 4px 10px;">
+                + Allow This Site
+              </button>
+            </div>
+          `;
+            const allowBtn = document.getElementById("add-to-whitelist-btn");
+            allowBtn?.addEventListener("click", () => {
+              try {
+                const host = new URL(activeTab.url).hostname;
+                const currentList = currentSettings?.urlFilterList || [];
+                if (!currentList.includes(host)) {
+                  saveSetting({ urlFilterList: [...currentList, host] });
+                }
+                setTimeout(() => fetchDetectedVideos(), 150);
+              } catch {
+              }
+            });
+          }
+          return;
+        }
         chrome.tabs.sendMessage(activeTab.id, { type: "GET_DETECTED_VIDEOS" }, (res) => {
           if (chrome.runtime.lastError || !res) {
             if (videoListContainer) {
@@ -185,6 +252,7 @@
       });
     }
     function populatePopupSettings(settings) {
+      currentSettings = settings;
       enabledToggle.checked = settings.enabled;
       autoEmbedToggle.checked = settings.autoEmbed ?? true;
       pauseWithVideoCheckbox.checked = settings.pauseSubtitlesWithVideo ?? true;

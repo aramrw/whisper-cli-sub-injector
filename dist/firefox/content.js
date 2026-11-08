@@ -31,8 +31,48 @@
     showNextButton: true,
     srtStartPaddingMs: 50,
     srtEndPaddingMs: 100,
-    autoEmbed: true
+    autoEmbed: true,
+    urlFilterMode: "all",
+    urlFilterList: ["crunchyroll.com", "youtube.com", "netflix.com"]
   };
+  function isUrlAllowed(url, mode = "all", filterList = []) {
+    if (mode === "all") return true;
+    if (!url) return false;
+    let hostname = "";
+    try {
+      const parsed = new URL(url);
+      hostname = parsed.hostname.toLowerCase();
+    } catch {
+      hostname = url.toLowerCase();
+    }
+    const normalizedUrl = url.toLowerCase();
+    const matchesAny = filterList.some((rawPattern) => {
+      const pattern = rawPattern.trim().toLowerCase();
+      if (!pattern) return false;
+      if (hostname === pattern || hostname.endsWith("." + pattern)) {
+        return true;
+      }
+      if (normalizedUrl.includes(pattern)) {
+        return true;
+      }
+      if (pattern.includes("*")) {
+        const regexStr = "^" + pattern.split("*").map((s) => s.replace(/[-[\]{}()+?.,\\^$|#\s]/g, "\\$&")).join(".*") + "$";
+        try {
+          const regex = new RegExp(regexStr, "i");
+          return regex.test(hostname) || regex.test(normalizedUrl);
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
+    if (mode === "whitelist") {
+      return matchesAny;
+    } else if (mode === "blacklist") {
+      return !matchesAny;
+    }
+    return true;
+  }
 
   // src/content/overlay/toolbar.ts
   function createOverlayToolbar(onPrev, onRerecord, onNext) {
@@ -1541,8 +1581,17 @@
             ...DEFAULT_SETTINGS,
             ...maybeWrapped && typeof maybeWrapped === "object" ? maybeWrapped : items
           };
-          for (const binding of bindings.values()) {
-            binding.overlay.applySettings(settings);
+          if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+            for (const binding of bindings.values()) {
+              binding.overlay.destroy();
+            }
+            bindings.clear();
+            activeVideo = null;
+            selectedVideoId = null;
+          } else {
+            for (const binding of bindings.values()) {
+              binding.overlay.applySettings(settings);
+            }
           }
         }
       });
@@ -1581,6 +1630,17 @@
   function scanVideos() {
     if (!isExtensionContextValid()) {
       cleanupInvalidatedContext();
+      return;
+    }
+    if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+      if (bindings.size > 0) {
+        for (const binding of bindings.values()) {
+          binding.overlay.destroy();
+        }
+        bindings.clear();
+        activeVideo = null;
+        selectedVideoId = null;
+      }
       return;
     }
     if (!document || !document.body && !document.documentElement) {
@@ -1668,6 +1728,9 @@
       return false;
     }
     if (message.type === "NEW_SUBTITLE") {
+      if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+        return false;
+      }
       const target = resolveCurrentTarget();
       if (target) {
         const binding = bindings.get(target);
@@ -1677,8 +1740,18 @@
       }
     } else if (message.type === "SETTINGS_CHANGED") {
       settings = message.settings;
-      for (const binding of bindings.values()) {
-        binding.overlay.applySettings(settings);
+      if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+        for (const binding of bindings.values()) {
+          binding.overlay.destroy();
+        }
+        bindings.clear();
+        activeVideo = null;
+        selectedVideoId = null;
+      } else {
+        for (const binding of bindings.values()) {
+          binding.overlay.applySettings(settings);
+        }
+        scanVideos();
       }
     } else if (message.type === "CLEAR_SUBTITLES") {
       for (const binding of bindings.values()) {

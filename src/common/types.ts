@@ -66,6 +66,8 @@ export interface DetectedVideoInfo {
   title: string;
 }
 
+export type UrlFilterMode = 'all' | 'whitelist' | 'blacklist';
+
 export interface ExtensionSettings {
   serverUrl: string;
   enabled: boolean;
@@ -97,6 +99,8 @@ export interface ExtensionSettings {
   srtStartPaddingMs: number;
   srtEndPaddingMs: number;
   autoEmbed: boolean;
+  urlFilterMode: UrlFilterMode;
+  urlFilterList: string[];
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -130,7 +134,66 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   srtStartPaddingMs: 50,
   srtEndPaddingMs: 100,
   autoEmbed: true,
+  urlFilterMode: 'all',
+  urlFilterList: ['crunchyroll.com', 'youtube.com', 'netflix.com'],
 };
+
+export function isUrlAllowed(
+  url: string,
+  mode: UrlFilterMode = 'all',
+  filterList: string[] = []
+): boolean {
+  if (mode === 'all') return true;
+  if (!url) return false;
+
+  let hostname = '';
+  try {
+    const parsed = new URL(url);
+    hostname = parsed.hostname.toLowerCase();
+  } catch {
+    hostname = url.toLowerCase();
+  }
+
+  const normalizedUrl = url.toLowerCase();
+  const matchesAny = filterList.some((rawPattern) => {
+    const pattern = rawPattern.trim().toLowerCase();
+    if (!pattern) return false;
+
+    if (hostname === pattern || hostname.endsWith('.' + pattern)) {
+      return true;
+    }
+
+    if (normalizedUrl.includes(pattern)) {
+      return true;
+    }
+
+    if (pattern.includes('*')) {
+      const regexStr =
+        '^' +
+        pattern
+          .split('*')
+          .map((s) => s.replace(/[-[\]{}()+?.,\\^$|#\s]/g, '\\$&'))
+          .join('.*') +
+        '$';
+      try {
+        const regex = new RegExp(regexStr, 'i');
+        return regex.test(hostname) || regex.test(normalizedUrl);
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  });
+
+  if (mode === 'whitelist') {
+    return matchesAny;
+  } else if (mode === 'blacklist') {
+    return !matchesAny;
+  }
+
+  return true;
+}
 
 export type MessageToContent =
   | { type: 'NEW_SUBTITLE'; cue: SubtitleCue }

@@ -386,7 +386,42 @@
           </div>
         </section>
 
-        <!-- 5. Server Connection & History Retention -->
+        <!-- 5. Webpage & Domain Filter -->
+        <section class="settings-card full-width-card">
+          <div class="card-header">
+            <span class="card-icon">🌐</span>
+            <div>
+              <h2>Webpage & Domain Filter</h2>
+              <p>Control which websites Whisper Subtitles should inject into or ignore</p>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="url-filter-mode" class="setting-title">Filter Mode</label>
+              <span class="setting-desc">
+                Choose whether to run on all websites, only on allowed sites (Whitelist), or on all sites except blocked ones (Blacklist).
+              </span>
+            </div>
+            <select id="url-filter-mode" class="styled-select">
+              <option value="all">Allow All Webpages (Default)</option>
+              <option value="whitelist">Whitelist (Only inject on specified sites)</option>
+              <option value="blacklist">Blacklist (Inject on all sites except specified)</option>
+            </select>
+          </div>
+
+          <div class="setting-row" id="filter-list-row">
+            <div class="setting-info">
+              <label for="url-filter-list" class="setting-title">Domain & Webpage List</label>
+              <span class="setting-desc">
+                Enter domain names or URL patterns, one per line (e.g. <code>crunchyroll.com</code>, <code>youtube.com</code>, <code>netflix.com</code>). Subdomains and paths are matched automatically.
+              </span>
+            </div>
+            <textarea id="url-filter-list" class="styled-textarea" rows="4" placeholder="crunchyroll.com&#10;youtube.com&#10;netflix.com"></textarea>
+          </div>
+        </section>
+
+        <!-- 6. Server Connection & History Retention -->
         <section class="settings-card full-width-card">
           <div class="card-header">
             <span class="card-icon">🔌</span>

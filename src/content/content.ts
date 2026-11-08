@@ -1,6 +1,7 @@
 import {
   DEFAULT_SETTINGS,
   ExtensionSettings,
+  isUrlAllowed,
   MessageToContent,
   SubtitleCue,
 } from '../common/types';
@@ -100,8 +101,17 @@ function initSettings() {
           ...DEFAULT_SETTINGS,
           ...(maybeWrapped && typeof maybeWrapped === 'object' ? maybeWrapped : items),
         };
-        for (const binding of bindings.values()) {
-          binding.overlay.applySettings(settings);
+        if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+          for (const binding of bindings.values()) {
+            binding.overlay.destroy();
+          }
+          bindings.clear();
+          activeVideo = null;
+          selectedVideoId = null;
+        } else {
+          for (const binding of bindings.values()) {
+            binding.overlay.applySettings(settings);
+          }
         }
       }
     });
@@ -144,6 +154,17 @@ function resolveCurrentTargetBinding(): VideoBinding | null {
 function scanVideos() {
   if (!isExtensionContextValid()) {
     cleanupInvalidatedContext();
+    return;
+  }
+  if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+    if (bindings.size > 0) {
+      for (const binding of bindings.values()) {
+        binding.overlay.destroy();
+      }
+      bindings.clear();
+      activeVideo = null;
+      selectedVideoId = null;
+    }
     return;
   }
   if (!document || (!document.body && !document.documentElement)) {
@@ -244,6 +265,9 @@ function handleIncomingMessage(
     return false;
   }
   if (message.type === 'NEW_SUBTITLE') {
+    if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+      return false;
+    }
     const target = resolveCurrentTarget();
     if (target) {
       const binding = bindings.get(target);
@@ -253,8 +277,18 @@ function handleIncomingMessage(
     }
   } else if (message.type === 'SETTINGS_CHANGED') {
     settings = message.settings;
-    for (const binding of bindings.values()) {
-      binding.overlay.applySettings(settings);
+    if (!isUrlAllowed(window.location.href, settings.urlFilterMode, settings.urlFilterList)) {
+      for (const binding of bindings.values()) {
+        binding.overlay.destroy();
+      }
+      bindings.clear();
+      activeVideo = null;
+      selectedVideoId = null;
+    } else {
+      for (const binding of bindings.values()) {
+        binding.overlay.applySettings(settings);
+      }
+      scanVideos();
     }
   } else if (message.type === 'CLEAR_SUBTITLES') {
     for (const binding of bindings.values()) {

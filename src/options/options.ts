@@ -62,6 +62,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const maxEntriesSelect = document.getElementById('max-entries') as HTMLSelectElement;
   const resetDefaultsBtn = document.getElementById('reset-defaults-btn') as HTMLButtonElement;
 
+  // 6. Webpage & Domain Filter
+  const urlFilterModeSelect = document.getElementById('url-filter-mode') as HTMLSelectElement;
+  const urlFilterListTextarea = document.getElementById('url-filter-list') as HTMLTextAreaElement;
+
   let toastTimeout: any = null;
 
   function showSavedToast(label = '✓ Saved') {
@@ -141,6 +145,9 @@ document.addEventListener('DOMContentLoaded', () => {
     fadeTimeoutVal.textContent = `${fadeSecs}s`;
 
     serverUrlInput.value = s.serverUrl;
+
+    urlFilterModeSelect.value = s.urlFilterMode || 'all';
+    urlFilterListTextarea.value = (s.urlFilterList || ['crunchyroll.com', 'youtube.com', 'netflix.com']).join('\n');
   }
 
   function bindTimingSection() {
@@ -330,9 +337,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  function bindWebpageFilterSection() {
+    urlFilterModeSelect.addEventListener('change', () => {
+      saveSetting({ urlFilterMode: urlFilterModeSelect.value as any });
+    });
+    urlFilterListTextarea.addEventListener('change', () => {
+      const list = urlFilterListTextarea.value
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      saveSetting({ urlFilterList: list });
+    });
+  }
+
   bindTimingSection();
   bindPlaybackSection();
   bindSmartReplaySection();
   bindAppearanceSection();
+  bindWebpageFilterSection();
   bindServerHistorySection();
 });

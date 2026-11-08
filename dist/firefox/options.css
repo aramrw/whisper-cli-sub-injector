@@ -289,8 +289,25 @@ input:checked + .slider:before {
 }
 
 .styled-select:focus,
-.text-input:focus {
+.text-input:focus,
+.styled-textarea:focus {
   border-color: #38bdf8;
+}
+
+.styled-textarea {
+  background-color: #0f1218;
+  color: #f1f5f9;
+  border: 1px solid #2c3342;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-width: 260px;
+  width: 100%;
+  max-width: 380px;
+  resize: vertical;
+  outline: none;
 }
 
 .server-controls {
