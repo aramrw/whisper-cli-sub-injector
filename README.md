@@ -8,6 +8,7 @@ Companion app for [whisper-cli](https://github.com/aramrw/whisper-cli) (required
   <img width="755" height="345" alt="st_overlayd_resized" src="https://github.com/user-attachments/assets/e83736d6-32f4-4c7b-ac0b-5b8b19992830" />
 </p>
 
+
 ## Features
 
 - Detects and binds to videos (works on YouTube, Crunchyroll, Netflix, and other video sites).
@@ -17,10 +18,7 @@ Companion app for [whisper-cli](https://github.com/aramrw/whisper-cli) (required
 - Supports fullscreen mode
 
 ### Popup
-<p align="center">
-  <img src="screenshots/popup.png" width="35%" alt="Extension Popup" />
-  &nbsp;
-</p>
+  <img width="315" height="598" alt="image" src="https://github.com/user-attachments/assets/5414d7cd-9f45-49da-9cf8-cd998fadf0fb" />
 
 ### History
 <p align="center">
